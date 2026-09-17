@@ -119,6 +119,29 @@ pub async fn account_activate(
     Ok(resp)
 }
 
+/// 修改密码 — 登录式(旧密码验证), 成功后返回 changed:true
+#[tauri::command]
+pub async fn account_change_password(
+    state: State<'_, SessionState>,
+    ctx: State<'_, AppCtx>,
+    old_password: String,
+    new_password: String,
+) -> Result<serde_json::Value, String> {
+    let creds = state.0.lock().unwrap().clone();
+    let creds = creds.ok_or("未登录，请先注册或登录账号")?;
+    eprintln!("[account_change_password] account_id={}", creds.account_id);
+    let resp = ctx
+        .client
+        .change_password(&creds.account_id, &old_password, &new_password)
+        .await
+        .map_err(|e| {
+            eprintln!("[account_change_password] FAILED: {}", e);
+            e.to_string()
+        })?;
+    eprintln!("[account_change_password] OK");
+    Ok(resp)
+}
+
 /// [L1登录] — 账号密码登录获取auth-token
 #[tauri::command]
 pub async fn l1_login(

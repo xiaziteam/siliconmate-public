@@ -80,6 +80,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [activateCode, setActivateCode] = useState('')
   const [activateMsg, setActivateMsg] = useState('')
   const [activateLoading, setActivateLoading] = useState(false)
+  // 修改密码 (v4.2.2)
+  const [showPwdModal, setShowPwdModal] = useState(false)
+  const [oldPwd, setOldPwd] = useState('')
+  const [newPwd, setNewPwd] = useState('')
+  const [newPwd2, setNewPwd2] = useState('')
+  const [pwdChanging, setPwdChanging] = useState(false)
+  const [pwdMsg, setPwdMsg] = useState('')
 
   // SMCP state
   const [showSmcpPanel, setShowSmcpPanel] = useState(false)
@@ -203,6 +210,26 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // T025: 红点 = 全局事件计数(Kotlin后台轮询) 与 面板内实时列表 取大者
   const friendBadge = Math.max(pendingFriendCount, showSmcpPanel ? smcpRequests.length : 0)
+
+  // 修改密码提交 (v4.2.2)
+  const handleChangePassword = async () => {
+    if (!oldPwd || !newPwd || !newPwd2) { setPwdMsg('请填写完整'); return }
+    if (newPwd.length < 6) { setPwdMsg('新密码至少6位'); return }
+    if (newPwd !== newPwd2) { setPwdMsg('两次新密码不一致'); return }
+    setPwdChanging(true)
+    setPwdMsg('提交中...')
+    try {
+      await invoke('account_change_password', { oldPassword: oldPwd, newPassword: newPwd })
+      setPwdMsg('')
+      setOldPwd(''); setNewPwd(''); setNewPwd2('')
+      setShowPwdModal(false)
+    } catch (e: any) {
+      const s = String(e?.message || e)
+      setPwdMsg(s.includes('旧密码错误') ? '旧密码错误' : s.includes('锁定') ? '尝试过多已锁定,请稍后再试' : `修改失败: ${s.slice(0, 60)}`)
+    } finally {
+      setPwdChanging(false)
+    }
+  }
 
   const handleActivateSubmit = async () => {
     if (!activateCode.trim()) { setActivateMsg('请输入激活码'); return }
@@ -463,6 +490,25 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span style={{ color: '#f39c12', marginLeft: '6px', fontSize: '10px' }}>· 缺本地模型</span>
           )}
         </span>
+        <span style={{ fontSize: '12px', color: '#555' }}>›</span>
+      </div>
+
+      {/* 修改密码入口 (v4.2.2) */}
+      <div
+        onClick={() => { setShowPwdModal(true); setPwdMsg('') }}
+        style={{
+          padding: '8px 14px',
+          borderBottom: '1px solid #222',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          transition: 'background 0.15s',
+        }}
+        onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
+        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+      >
+        <span style={{ fontSize: '12px', color: '#7a8aa0' }}>🔑 修改密码</span>
         <span style={{ fontSize: '12px', color: '#555' }}>›</span>
       </div>
 
@@ -1264,6 +1310,79 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {visionSaveMsg && (
               <div style={{ fontSize: '11px', color: visionSaveMsg.includes('✓') ? '#2ecc71' : '#e74c3c', marginTop: '6px', textAlign: 'center' }}>
                 {visionSaveMsg}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 修改密码模态框 (v4.2.2) */}
+      {showPwdModal && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 200,
+        }}>
+          <div style={{
+            width: '320px',
+            background: '#0f1115',
+            border: '1px solid #333',
+            borderRadius: '10px',
+            padding: '16px',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>🔑 修改密码</span>
+              <button
+                onClick={() => setShowPwdModal(false)}
+                style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: '16px', padding: '0 4px' }}
+              >✕</button>
+            </div>
+            {accountName && (
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '10px' }}>
+                当前账号: <span style={{ color: '#e6e6e6' }}>{accountName}</span>
+              </div>
+            )}
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '4px' }}>旧密码</div>
+              <input
+                type="password" placeholder="当前密码"
+                value={oldPwd} onChange={e => setOldPwd(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '7px 10px', color: '#e6e6e6', fontSize: '12px', outline: 'none' }}
+              />
+            </div>
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '4px' }}>新密码（至少6位）</div>
+              <input
+                type="password" placeholder="新密码"
+                value={newPwd} onChange={e => setNewPwd(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '7px 10px', color: '#e6e6e6', fontSize: '12px', outline: 'none' }}
+              />
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '4px' }}>确认新密码</div>
+              <input
+                type="password" placeholder="再输入一次新密码"
+                value={newPwd2} onChange={e => setNewPwd2(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '7px 10px', color: '#e6e6e6', fontSize: '12px', outline: 'none' }}
+              />
+            </div>
+            <button
+              onClick={handleChangePassword}
+              disabled={pwdChanging}
+              style={{
+                width: '100%', padding: '8px 0',
+                background: pwdChanging ? '#1a3aa0' : '#2a5cff', color: '#fff',
+                border: 'none', borderRadius: '6px', cursor: pwdChanging ? 'default' : 'pointer',
+                fontSize: '12px', fontWeight: 600,
+              }}
+            >{pwdChanging ? '提交中...' : '确认修改'}</button>
+            {pwdMsg && (
+              <div style={{ fontSize: '11px', color: '#e74c3c', marginTop: '8px', textAlign: 'center' }}>
+                {pwdMsg}
               </div>
             )}
           </div>

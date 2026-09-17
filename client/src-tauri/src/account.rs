@@ -120,19 +120,21 @@ pub async fn account_activate(
 }
 
 /// 修改密码 — 登录式(旧密码验证), 成功后返回 changed:true
+/// v4.3.1: account_id 由前端传入(冷启动恢复的会话无 Rust 内存 creds, 服务端靠旧密码鉴权+防爆破锁)
 #[tauri::command]
 pub async fn account_change_password(
-    state: State<'_, SessionState>,
     ctx: State<'_, AppCtx>,
+    account_id: String,
     old_password: String,
     new_password: String,
 ) -> Result<serde_json::Value, String> {
-    let creds = state.0.lock().unwrap().clone();
-    let creds = creds.ok_or("未登录，请先注册或登录账号")?;
-    eprintln!("[account_change_password] account_id={}", creds.account_id);
+    if account_id.is_empty() {
+        return Err("未登录，请先注册或登录账号".into());
+    }
+    eprintln!("[account_change_password] account_id={}", account_id);
     let resp = ctx
         .client
-        .change_password(&creds.account_id, &old_password, &new_password)
+        .change_password(&account_id, &old_password, &new_password)
         .await
         .map_err(|e| {
             eprintln!("[account_change_password] FAILED: {}", e);
@@ -143,19 +145,21 @@ pub async fn account_change_password(
 }
 
 /// 修改用户名 — 旧密码验证, 硅侣号不变仅改昵称
+/// v4.3.1: account_id 由前端传入(同上)
 #[tauri::command]
 pub async fn account_change_username(
-    state: State<'_, SessionState>,
     ctx: State<'_, AppCtx>,
+    account_id: String,
     old_password: String,
     new_username: String,
 ) -> Result<serde_json::Value, String> {
-    let creds = state.0.lock().unwrap().clone();
-    let creds = creds.ok_or("未登录，请先注册或登录账号")?;
-    eprintln!("[account_change_username] account_id={}", creds.account_id);
+    if account_id.is_empty() {
+        return Err("未登录，请先注册或登录账号".into());
+    }
+    eprintln!("[account_change_username] account_id={}", account_id);
     let resp = ctx
         .client
-        .change_username(&creds.account_id, &old_password, &new_username)
+        .change_username(&account_id, &old_password, &new_username)
         .await
         .map_err(|e| {
             eprintln!("[account_change_username] FAILED: {}", e);

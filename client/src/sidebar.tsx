@@ -226,10 +226,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (!oldPwd || !newPwd || !newPwd2) { setPwdMsg('请填写完整'); return }
     if (newPwd.length < 6) { setPwdMsg('新密码至少6位'); return }
     if (newPwd !== newPwd2) { setPwdMsg('两次新密码不一致'); return }
+    if (!accountId) { setPwdMsg('请先注册或登录账号'); return }
     setPwdChanging(true)
     setPwdMsg('提交中...')
     try {
-      await invoke('account_change_password', { oldPassword: oldPwd, newPassword: newPwd })
+      await invoke('account_change_password', { accountId, oldPassword: oldPwd, newPassword: newPwd })
       setPwdMsg('')
       setOldPwd(''); setNewPwd(''); setNewPwd2('')
       setShowPwdModal(false)
@@ -247,10 +248,11 @@ export const Sidebar: React.FC<SidebarProps> = ({
     if (!name || !nameVerifyPwd) { setUsernameMsg('请填写完整'); return }
     if (name.length < 3 || name.length > 20) { setUsernameMsg('用户名须3-20字符'); return }
     if (name === accountName) { setUsernameMsg('新用户名与当前相同'); return }
+    if (!accountId) { setUsernameMsg('请先注册或登录账号'); return }
     setUsernameChanging(true)
     setUsernameMsg('提交中...')
     try {
-      await invoke('account_change_username', { oldPassword: nameVerifyPwd, newUsername: name })
+      await invoke('account_change_username', { accountId, oldPassword: nameVerifyPwd, newUsername: name })
       try { localStorage.setItem('siliconmate_account_name', name) } catch {}
       onAccountNameChange?.(name)
       setUsernameMsg('')

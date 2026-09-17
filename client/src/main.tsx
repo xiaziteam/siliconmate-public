@@ -83,6 +83,21 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             if (!j.ok) throw new Error(j.message || j.error || '修改密码失败')
             return j.data
           }
+          case 'account_change_username': {
+            // v4.3.0: 修改用户名(旧密码验证, 硅侣号不变)
+            const resp = await fetch('https://locatenotify.online/v1/auth/change_username', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                account_id: accountStore.accountId,
+                old_password: args.oldPassword,
+                new_username: args.newUsername,
+              }),
+            })
+            const j = await resp.json()
+            if (!j.ok) throw new Error(j.message || j.error || '修改用户名失败')
+            return j.data
+          }
           case 'account_activate': {
             // US2: Promise 回调模式 — Kotlin 异步调 /v1/activate/bind,
             // 完成后注入 window.__activateResolve('ok', plan) / __activateReject(reason)

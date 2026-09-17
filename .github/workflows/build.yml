@@ -127,6 +127,18 @@ jobs:
         working-directory: client
         run: npm run tauri build
 
+      - name: Fix deb package name (productName is CJK, dpkg requires ASCII)
+        run: |
+          cd client/src-tauri/target/release/bundle/deb
+          for f in *.deb; do
+            dpkg-deb -R "$f" debfix
+            sed -i 's/^Package: .*/Package: siliconmate/' debfix/DEBIAN/control
+            dpkg-deb -b --root-owner-group debfix "fixed-$f"
+            mv "fixed-$f" "$f"
+            rm -rf debfix
+          done
+          dpkg-deb -f *.deb Package
+
       - name: Upload AppImage & deb
         uses: actions/upload-artifact@v4
         with:

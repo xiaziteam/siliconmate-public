@@ -12,6 +12,21 @@ export interface Message {
   content: string
   isStreaming: boolean
   timestamp: number
+  // Agent task result fields (optional)
+  is_task_result?: boolean
+  execution_tier?: string   // "native" | "nuphus" | "freecode" | "fallback" | "multi_step" | "none"
+  task_status?: string      // "success" | "error" | "rejected" | "timeout"
+  screenshots?: string[]    // base64 encoded
+  duration_ms?: number
+  error_message?: string
+  steps?: MessageStep[]     // Multi-step execution (Computer Use)
+}
+
+export interface MessageStep {
+  step_num: number
+  description: string
+  screenshot?: string
+  status: string
 }
 
 export interface SmcpTarget {
@@ -59,6 +74,8 @@ export interface Conversation {
   displaySubtitle?: string
   /** 好友在线状态 */
   onlineStatus?: 'online' | 'offline' | null
+  /** 未读消息数 */
+  unreadCount?: number
 }
 
 const STORAGE_KEY = 'siliconmate_conversations'

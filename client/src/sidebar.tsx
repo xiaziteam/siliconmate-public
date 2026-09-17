@@ -5,6 +5,7 @@ import {
   getPendingRequests,
   sendFriendRequest,
   acceptFriendRequest,
+  rejectFriendRequest,
   removeFriend,
   lookupSiliconId,
   SmcpFriend,
@@ -44,6 +45,14 @@ interface SidebarProps {
   accountId?: string
   /** 当前用户硅侣号 */
   mySiliconId?: string
+  /** 当前登录用户名(注册时设置) — 显示在侧栏头部，便于多账号辨识 */
+  accountName?: string
+  /** T025: 待处理好友申请数(红点数据源 — Kotlin 后台轮询事件 + 面板内操作回写) */
+  pendingFriendCount?: number
+  /** T025: 面板内申请列表变化时回写 App 全局红点状态 */
+  onPendingFriendCountChange?: (n: number) => void
+  /** T024/T025: 好友申请通知点击信号(递增计数 → 打开好友面板) */
+  openFriendsSignal?: number
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -61,6 +70,10 @@ export const Sidebar: React.FC<SidebarProps> = ({
   onOpenGroupChat,
   accountId,
   mySiliconId,
+  accountName,
+  pendingFriendCount = 0,
+  onPendingFriendCountChange,
+  openFriendsSignal = 0,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [showActivateModal, setShowActivateModal] = useState(false)
@@ -84,6 +97,86 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [inviteSelectedIds, setInviteSelectedIds] = useState<Set<string>>(new Set())
 
   const invoke = (window as any).__TAURI__?.core?.invoke
+  const listen = (window as any).__TAURI__?.event?.listen
+
+  // 视觉引擎设置 (v4.2.0)
+  const [showVisionModal, setShowVisionModal] = useState(false)
+  const [visionStatus, setVisionStatus] = useState<any>(null)
+  const [visionOcrEngine, setVisionOcrEngine] = useState('auto')
+  const [visionApiUrl, setVisionApiUrl] = useState('')
+  const [visionApiKey, setVisionApiKey] = useState('')
+  const [visionApiModel, setVisionApiModel] = useState('')
+  const [visionSaveMsg, setVisionSaveMsg] = useState('')
+  const [visionDownloading, setVisionDownloading] = useState(false)
+  const [visionProgress, setVisionProgress] = useState('')
+
+  // 打开面板时拉取状态
+  useEffect(() => {
+    if (showVisionModal) {
+      setVisionSaveMsg('')
+      invoke?.('vision_engine_status').then((s: any) => {
+        setVisionStatus(s)
+        setVisionOcrEngine(s?.config?.ocrEngine || 'auto')
+        setVisionApiUrl(s?.config?.apiUrl || '')
+        setVisionApiModel(s?.config?.apiModel || '')
+        setVisionApiKey('')
+        setVisionDownloading(!!s?.models?.downloading)
+      })
+    }
+  }, [showVisionModal])
+
+  // 下载进度事件流
+  useEffect(() => {
+    if (!listen || !showVisionModal) return
+    let unlisten: (() => void) | null = null
+    listen('vision:download', (event: any) => {
+      const p = event.payload
+      if (p.kind === 'progress') {
+        const pct = p.total > 0 ? Math.round((p.downloaded / p.total) * 100) : 0
+        const mb = (p.downloaded / 1024 / 1024).toFixed(1)
+        setVisionProgress(`(${p.index}/${p.count}) ${p.file} ${pct > 0 ? pct + '%' : mb + 'MB'}`)
+      } else if (p.kind === 'done') {
+        setVisionDownloading(false)
+        setVisionProgress('')
+        setVisionSaveMsg('模型下载完成 ✓')
+        invoke?.('vision_engine_status').then(setVisionStatus)
+      } else if (p.kind === 'error') {
+        setVisionDownloading(false)
+        setVisionProgress('')
+        setVisionSaveMsg('下载失败: ' + (p.message || '未知错误'))
+      }
+    }).then((fn: () => void) => { unlisten = fn })
+    return () => { unlisten?.() }
+  }, [listen, showVisionModal])
+
+  const saveVisionConfig = async () => {
+    try {
+      const r = await invoke?.('vision_engine_set', {
+        ocrEngine: visionOcrEngine,
+        apiUrl: visionApiUrl,
+        apiKey: visionApiKey.trim() ? visionApiKey : undefined,
+        apiModel: visionApiModel,
+      })
+      if (r?.ok) {
+        setVisionSaveMsg('已保存 ✓')
+        setVisionApiKey('')
+        setTimeout(() => setVisionSaveMsg(''), 2500)
+        invoke?.('vision_engine_status').then(setVisionStatus)
+      }
+    } catch (e: any) {
+      setVisionSaveMsg('保存失败: ' + String(e))
+    }
+  }
+
+  const startVisionDownload = async () => {
+    try {
+      await invoke?.('vision_models_download')
+      setVisionDownloading(true)
+      setVisionSaveMsg('')
+    } catch (e: any) {
+      setVisionSaveMsg(String(e))
+    }
+  }
 
   // Load SMCP data when panel opens
   useEffect(() => {
@@ -91,29 +184,68 @@ export const Sidebar: React.FC<SidebarProps> = ({
       smcpPing().then(setSmcpRelayOk)
       getFriends().then(setSmcpFriends)
       getGroups().then(setSmcpGroups)
-      getPendingRequests().then(setSmcpRequests)
+      getPendingRequests().then(list => {
+        setSmcpRequests(list)
+        // T025: 面板打开即校准全局红点计数
+        onPendingFriendCountChange?.(list.length)
+      })
     }
   }, [showSmcpPanel, accountId])
+
+  // T024/T025: 好友申请系统通知点击 → 拉起好友面板
+  const lastSignalRef = React.useRef(openFriendsSignal)
+  useEffect(() => {
+    if (openFriendsSignal > 0 && openFriendsSignal !== lastSignalRef.current) {
+      lastSignalRef.current = openFriendsSignal
+      setShowSmcpPanel(true)
+    }
+  }, [openFriendsSignal])
+
+  // T025: 红点 = 全局事件计数(Kotlin后台轮询) 与 面板内实时列表 取大者
+  const friendBadge = Math.max(pendingFriendCount, showSmcpPanel ? smcpRequests.length : 0)
 
   const handleActivateSubmit = async () => {
     if (!activateCode.trim()) { setActivateMsg('请输入激活码'); return }
     setActivateLoading(true)
-    setActivateMsg('激活中...')
+    setActivateMsg('激活中, 请稍候...')
     try {
       const resp = await invoke('account_activate', { code: activateCode.trim() })
+      // Android 适配层 resolve {plan, activated:true, tunnel:null}(隧道原生启动);
+      // 桌面 Tauri 可能返回 tunnel 配置 → 需显式启动
       if (resp.tunnel) {
-        try { await invoke('start_tunnel', { config: resp.tunnel }) } catch {}
+        try { await invoke('start_tunnel', { config: resp.tunnel }) } catch (te) {
+          console.warn('[sidebar] tunnel start failed:', te)
+        }
       }
-      setActivateMsg('')
-      setShowActivateModal(false)
-      setActivateCode('')
+      // T015: 激活态双写 — localStorage + 服务端(bind 已落库)
+      try { localStorage.setItem('siliconmate_activated', '1') } catch {}
+      setActivateMsg('激活成功 ✓')
+      setTimeout(() => {
+        setShowActivateModal(false)
+        setActivateCode('')
+        setActivateMsg('')
+      }, 600)
       onActivate(resp.plan)
     } catch (e: any) {
-      const msg = String(e)
+      const msg = String(e?.message || e || '')
       if (msg.includes('未登录')) {
         setActivateMsg('请先注册或登录账号后再激活')
-      } else {
+      } else if (msg.includes('ERR_INVALID')) {
+        setActivateMsg('激活码无效')
+      } else if (msg.includes('ERR_WRONG_PRODUCT')) {
+        setActivateMsg('此激活码不适用于当前产品')
+      } else if (msg.includes('ERR_EXPIRED')) {
+        setActivateMsg('激活码已过期')
+      } else if (msg.includes('ERR_ALREADY_ACTIVATED')) {
+        setActivateMsg('账号已激活, 无需重复激活')
+      } else if (msg.includes('ERR_FORMAT')) {
+        setActivateMsg('激活码格式不正确')
+      } else if (msg.includes('auth_failed')) {
+        setActivateMsg('账号验证失败, 请重新登录')
+      } else if (msg.includes('激活超时')) {
         setActivateMsg(msg)
+      } else {
+        setActivateMsg(msg || '激活失败, 请重试')
       }
     } finally {
       setActivateLoading(false)
@@ -165,10 +297,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
         >
           🦐
         </button>
+        <div title={accountName || undefined} style={{
+          fontSize: '10px', fontWeight: 600, color: '#e6e6e6', marginTop: '2px',
+          maxWidth: '100%', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+        }}>
+          {accountName || ''}
+        </div>
         <div title={activated ? '已激活' : '未激活'} style={{
           fontSize: '14px', color: activated ? '#2ecc71' : '#e74c3c', marginTop: '4px',
         }}>
           {activated ? '🟢' : '🔴'}
+        </div>
+        <div title={`硅侣 v${__APP_VERSION__} · 构建 ${__BUILD_TIME__}`} style={{
+          fontSize: '9px', color: '#7a8aa0', marginTop: '2px', writingMode: 'horizontal-tb',
+        }}>
+          v{__APP_VERSION__}
         </div>
       </div>
     )
@@ -193,7 +336,31 @@ export const Sidebar: React.FC<SidebarProps> = ({
         borderBottom: '1px solid #222',
       }}>
         <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>对话</span>
-        <div style={{ display: 'flex', gap: '6px' }}>
+        {/* 当前账号标识 — 用户名 + 硅侣号，多账号辨识 */}
+        <div
+          title={`账号：${accountName || '未登录'}${mySiliconId ? `\n硅侣号：${mySiliconId}（点击复制）` : ''}`}
+          onClick={() => { if (mySiliconId) { try { navigator.clipboard.writeText(mySiliconId) } catch {} } }}
+          style={{
+            flex: 1, minWidth: 0, textAlign: 'center', lineHeight: 1.3,
+            cursor: mySiliconId ? 'pointer' : 'default', userSelect: 'none',
+          }}
+        >
+          <div style={{ fontSize: '13px', fontWeight: 600, color: '#e6e6e6', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+            {accountName || ''}
+          </div>
+          {mySiliconId && (
+            <div style={{ fontSize: '10px', color: '#7a8aa0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+              {mySiliconId}
+            </div>
+          )}
+        </div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+          <span title={`硅侣 v${__APP_VERSION__} · 构建 ${__BUILD_TIME__}`} style={{
+            fontSize: '10px', color: '#7a8aa0', background: '#1a1d26',
+            border: '1px solid #2a2a3a', borderRadius: '4px', padding: '2px 5px',
+          }}>
+            v{__APP_VERSION__}
+          </span>
           <button
             onClick={onToggleCollapse}
             title="折叠侧边栏"
@@ -264,8 +431,36 @@ export const Sidebar: React.FC<SidebarProps> = ({
       >
         <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
           🦐 {mySiliconId || '虾群好友'}
-          {smcpRequests.length > 0 && (
-            <span style={{ color: '#f39c12', marginLeft: '6px' }}>({smcpRequests.length}请求)</span>
+          {friendBadge > 0 && (
+            <span style={{
+              background: '#e74c3c', color: '#fff', borderRadius: '8px',
+              fontSize: '10px', padding: '1px 5px', marginLeft: '6px',
+              display: 'inline-block', minWidth: '14px', textAlign: 'center',
+            }}>{friendBadge}</span>
+          )}
+        </span>
+        <span style={{ fontSize: '12px', color: '#555' }}>›</span>
+      </div>
+
+      {/* 视觉引擎设置入口 (v4.2.0) */}
+      <div
+        onClick={() => setShowVisionModal(true)}
+        style={{
+          padding: '8px 14px',
+          borderBottom: '1px solid #222',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'space-between',
+          cursor: 'pointer',
+          transition: 'background 0.15s',
+        }}
+        onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
+        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+      >
+        <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
+          👁 视觉引擎
+          {visionStatus?.models && !visionStatus.models.ocrReady && (
+            <span style={{ color: '#f39c12', marginLeft: '6px', fontSize: '10px' }}>· 缺本地模型</span>
           )}
         </span>
         <span style={{ fontSize: '12px', color: '#555' }}>›</span>
@@ -322,20 +517,42 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 gap: '8px',
                 alignItems: 'center',
               }}>
-                {/* 头像圆圈 */}
-                <div style={{
-                  width: '32px',
-                  height: '32px',
-                  borderRadius: '50%',
-                  background: conv.smcpGroupTarget ? '#1a3a2a' : conv.smcpTarget ? '#1a2a4a' : '#2a2a3a',
-                  display: 'flex',
-                  alignItems: 'center',
-                  justifyContent: 'center',
-                  fontSize: '14px',
-                  flexShrink: 0,
-                  border: convOnline === 'online' ? '2px solid #2ecc71' : '2px solid transparent',
-                }}>
-                  {conv.smcpGroupTarget ? '👥' : conv.smcpTarget ? '🦐' : '🤖'}
+                {/* 头像圆圈 + 未读红点 */}
+                <div style={{ position: 'relative', flexShrink: 0 }}>
+                  <div style={{
+                    width: '32px',
+                    height: '32px',
+                    borderRadius: '50%',
+                    background: conv.smcpGroupTarget ? '#1a3a2a' : conv.smcpTarget ? '#1a2a4a' : '#2a2a3a',
+                    display: 'flex',
+                    alignItems: 'center',
+                    justifyContent: 'center',
+                    fontSize: '14px',
+                    border: convOnline === 'online' ? '2px solid #2ecc71' : '2px solid transparent',
+                  }}>
+                    {conv.smcpGroupTarget ? '👥' : conv.smcpTarget ? '🦐' : '🤖'}
+                  </div>
+                  {conv.unreadCount && conv.unreadCount > 0 && (
+                    <div style={{
+                      position: 'absolute',
+                      top: '-4px',
+                      right: '-4px',
+                      minWidth: '16px',
+                      height: '16px',
+                      borderRadius: '8px',
+                      background: '#e74c3c',
+                      color: '#fff',
+                      fontSize: '10px',
+                      fontWeight: 700,
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      padding: '0 4px',
+                      lineHeight: 1,
+                    }}>
+                      {conv.unreadCount > 99 ? '99+' : conv.unreadCount}
+                    </div>
+                  )}
                 </div>
                 <div style={{ flex: 1, overflow: 'hidden' }}>
                   <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -583,15 +800,15 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         setTimeout(() => setAddFriendMsg(''), 5000)
                         return
                       }
-                      if (!lookup?.ok && !lookup?.data) {
+                      if (!lookup?.ok && !lookup?.data && !lookup?.account_id) {
                         setAddFriendMsg('硅侣号不存在')
                         setTimeout(() => setAddFriendMsg(''), 3000)
                         return
                       }
-                      const targetName = lookup.data?.account_name || addFriendId.trim()
+                      const targetName = lookup?.data?.account_name || lookup?.account_name || addFriendId.trim()
                       setAddFriendMsg('发送请求中...')
-                       const result = await sendFriendRequest('', `你好，我是${targetName}的好友`, { agent_comm: true }, addFriendId.trim())
-                       if (result?.ok) {
+                      const result = await sendFriendRequest('', `你好，我是${mySiliconId || '硅侣用户'}，想和你成为好友`, { agent_comm: true }, addFriendId.trim())
+                       if (result?.ok || result?.request_id) {
                         setAddFriendMsg(`已向 ${targetName}(${addFriendId.trim()}) 发送请求 ✓`)
                         setAddFriendId('')
                         setTimeout(() => setAddFriendMsg(''), 3000)
@@ -639,12 +856,14 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     padding: '4px 0', fontSize: '12px',
                   }}>
                     <span style={{ color: '#bbb', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
-                      {req.from_user_id.slice(0, 12)}…: {req.message}
+                      {req.from_name ? `${req.from_name} (${req.from_silicon_id || req.from_user_id.slice(0, 12)})` : `${req.from_user_id.slice(0, 12)}…`}: {req.message}
                     </span>
                     <button
                       onClick={async () => {
                         await acceptFriendRequest(req.request_id)
-                        setSmcpRequests(prev => prev.filter(r => r.request_id !== req.request_id))
+                        const next = smcpRequests.filter(r => r.request_id !== req.request_id)
+                        setSmcpRequests(next)
+                        onPendingFriendCountChange?.(next.length)
                         getFriends().then(setSmcpFriends)
                       }}
                       style={{
@@ -654,6 +873,21 @@ export const Sidebar: React.FC<SidebarProps> = ({
                       }}
                     >
                       接受
+                    </button>
+                    <button
+                      onClick={async () => {
+                        await rejectFriendRequest(req.request_id)
+                        const next = smcpRequests.filter(r => r.request_id !== req.request_id)
+                        setSmcpRequests(next)
+                        onPendingFriendCountChange?.(next.length)
+                      }}
+                      style={{
+                        background: 'transparent', color: '#e74c3c', border: '1px solid #e74c3c',
+                        borderRadius: '4px', padding: '1px 6px', cursor: 'pointer', fontSize: '11px',
+                        marginLeft: '4px', flexShrink: 0,
+                      }}
+                    >
+                      拒绝
                     </button>
                   </div>
                 ))}
@@ -910,6 +1144,128 @@ export const Sidebar: React.FC<SidebarProps> = ({
                 )}
               </div>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* 视觉引擎设置模态框 (v4.2.0) */}
+      {showVisionModal && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 200,
+        }}>
+          <div style={{
+            width: '380px',
+            maxHeight: '85%',
+            overflowY: 'auto',
+            background: '#0f1115',
+            border: '1px solid #333',
+            borderRadius: '10px',
+            padding: '16px',
+          }}>
+            {/* 标题栏 */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>👁 视觉引擎</span>
+              <button
+                onClick={() => setShowVisionModal(false)}
+                style={{ background: '#2a2a3a', color: '#aaa', border: 'none', borderRadius: '6px', width: '28px', height: '28px', cursor: 'pointer' }}
+              >✕</button>
+            </div>
+
+            {/* OCR 引擎选择 */}
+            <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '6px' }}>OCR 文字识别引擎</div>
+            <div style={{ display: 'flex', gap: '6px', marginBottom: '6px' }}>
+              {[['auto', '自动'], ['local', '本地模型'], ['api', 'API']].map(([v, label]) => (
+                <button
+                  key={v}
+                  onClick={() => setVisionOcrEngine(v)}
+                  style={{
+                    flex: 1, padding: '6px 0',
+                    background: visionOcrEngine === v ? '#2a5cff' : '#1a1d26',
+                    color: visionOcrEngine === v ? '#fff' : '#888',
+                    border: visionOcrEngine === v ? '1px solid #2a5cff' : '1px solid #2a2a3a',
+                    borderRadius: '6px', cursor: 'pointer', fontSize: '12px',
+                  }}
+                >{label}</button>
+              ))}
+            </div>
+            <div style={{ fontSize: '10px', color: '#666', marginBottom: '14px' }}>
+              {visionOcrEngine === 'auto' && '自动：macOS 用系统自带识别（零模型），其他平台用本地模型'}
+              {visionOcrEngine === 'local' && '本地模型：PaddleOCR，离线可用，需先下载模型'}
+              {visionOcrEngine === 'api' && 'API：调云端视觉大模型，识别最准，需配置下方 API'}
+            </div>
+
+            {/* 本地模型状态 */}
+            <div style={{ borderTop: '1px solid #222', paddingTop: '10px', marginBottom: '12px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '6px' }}>
+                <span style={{ fontSize: '11px', color: '#7a8aa0' }}>本地模型（OCR 必需 / 图标检测可选）</span>
+                <span style={{ fontSize: '10px', color: visionStatus?.models?.ocrReady ? '#2ecc71' : '#f39c12' }}>
+                  {visionStatus?.models ? (visionStatus.models.ocrReady ? 'OCR 就绪 ✓' : '未下载') : '检测中…'}
+                </span>
+              </div>
+              {visionStatus?.models?.missing?.length > 0 && (
+                <div style={{ fontSize: '10px', color: '#888', marginBottom: '6px', wordBreak: 'break-all' }}>
+                  缺失: {visionStatus.models.missing.join('、')}
+                </div>
+              )}
+              {visionProgress && (
+                <div style={{ fontSize: '10px', color: '#2a9cff', marginBottom: '6px' }}>{visionProgress}</div>
+              )}
+              <button
+                onClick={startVisionDownload}
+                disabled={visionDownloading}
+                style={{
+                  width: '100%', padding: '6px 0',
+                  background: visionDownloading ? '#1a3a1a' : visionStatus?.models?.ocrReady ? '#2a2a3a' : '#2a5cff',
+                  color: visionDownloading ? '#2ecc71' : '#fff',
+                  border: 'none', borderRadius: '6px', cursor: visionDownloading ? 'default' : 'pointer',
+                  fontSize: '11px',
+                }}
+              >
+                {visionDownloading ? '下载中…' : visionStatus?.models?.ocrReady ? '重新下载/补全模型' : '下载模型 (~28MB)'}
+              </button>
+            </div>
+
+            {/* API 配置 */}
+            <div style={{ borderTop: '1px solid #222', paddingTop: '10px', marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '6px' }}>
+                视觉 API（API 模式必需，也可用于图标感知）
+              </div>
+              <input
+                type="text" placeholder="Base URL（如 https://api.xxx.com/v1）"
+                value={visionApiUrl} onChange={e => setVisionApiUrl(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '6px 10px', color: '#e6e6e6', fontSize: '11px', outline: 'none', marginBottom: '6px' }}
+              />
+              <input
+                type="password" placeholder={visionStatus?.config?.apiConfigured ? 'API Key（已配置，留空=不修改）' : 'API Key'}
+                value={visionApiKey} onChange={e => setVisionApiKey(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '6px 10px', color: '#e6e6e6', fontSize: '11px', outline: 'none', marginBottom: '6px' }}
+              />
+              <input
+                type="text" placeholder="视觉模型名（如 qwen-vl-plus / gpt-4o-mini）"
+                value={visionApiModel} onChange={e => setVisionApiModel(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '6px 10px', color: '#e6e6e6', fontSize: '11px', outline: 'none' }}
+              />
+            </div>
+
+            {/* 保存 */}
+            <button
+              onClick={saveVisionConfig}
+              style={{
+                width: '100%', padding: '8px 0', background: '#2a5cff', color: '#fff',
+                border: 'none', borderRadius: '6px', cursor: 'pointer', fontSize: '12px', fontWeight: 600,
+              }}
+            >保存设置</button>
+            {visionSaveMsg && (
+              <div style={{ fontSize: '11px', color: visionSaveMsg.includes('✓') ? '#2ecc71' : '#e74c3c', marginTop: '6px', textAlign: 'center' }}>
+                {visionSaveMsg}
+              </div>
+            )}
           </div>
         </div>
       )}

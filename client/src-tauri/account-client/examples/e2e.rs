@@ -6,7 +6,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let name = std::env::var("E2E_NAME")?;
     let pw = std::env::var("E2E_PW")?;
     let mk = std::env::var("E2E_MK")?;
-    let c = AccountClient::new("https://<YOUR_SERVER_HOST>:8444", true)?;
+    let c = AccountClient::new("https://locatenotify.online:8444", true)?;
     println!("1 health:");
     println!("   {}", c.health().await?);
     println!("2 admin create:");

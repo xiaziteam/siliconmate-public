@@ -12,7 +12,7 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { formatTime, formatFileSize, getGroupInfo } from './smcp'
+import { formatTime, formatFileSize, getGroupInfo, kickGroupMember, transferGroupOwner, setGroupMemberRole, updateGroup, taskExecute, TaskResult, listCapabilities, CapabilityInfo } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -30,21 +30,57 @@ interface Message {
   content: string
   isStreaming: boolean
   timestamp: number
+  // Agent task result fields
+  execution_tier?: string   // "native" | "nuphus" | "freecode" | "fallback"
+  task_status?: string      // "success" | "error" | "rejected" | "timeout"
+  screenshots?: string[]    // base64 encoded
+  duration_ms?: number
+  error_message?: string
+  is_task_result?: boolean
+  // Multi-step execution (Computer Use)
+  steps?: TaskStep[]
+}
+
+interface TaskStep {
+  step_num: number
+  description: string
+  screenshot?: string
+  status: string
+}
+
+/** Agent能力tier样式配置 */
+const TIER_STYLES: Record<string, { icon: string; color: string; label: string }> = {
+  native: { icon: '⚡', color: '#4CAF50', label: '原生直通' },
+  nuphus: { icon: '🤖', color: '#2196F3', label: 'Nuphus引擎' },
+  freecode: { icon: '🧠', color: '#9C27B0', label: '深度思考' },
+  fallback: { icon: '⚠️', color: '#FF9800', label: '降级命令' },
+  multi_step: { icon: '🔄', color: '#00BCD4', label: '多步执行' },
+  none: { icon: '❌', color: '#f44336', label: '无' },
+}
+
+function getTierStyle(tier: string) {
+  return TIER_STYLES[tier] || TIER_STYLES.none
 }
 
 interface ChatProps {
-  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean) => void
+  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any) => void
   onVoiceChat: () => void
   status: 'idle' | 'thinking' | 'deep_thinking' | 'streaming' | 'error'
   deepThinkProgress?: string
   serverConnected?: boolean
   serverConnecting?: boolean
+  /** T029: 激活态 — 状态条三态(未激活/已连接/离线)判据 */
+  activated?: boolean
   messages: Message[]
   isVoiceMode: boolean
   /** 如果是SMCP对话，传对方信息 */
   smcpTarget?: { userId: string; agentId: string; role: string } | null
   /** 如果是SMCP群聊，传群信息 */
   smcpGroupTarget?: { groupId: string; groupName: string; memberCount?: number; members?: { userId: string; role: string; accountName?: string; siliconId?: string }[] } | null
+  /** 当前用户ID，用于判断群管理权限 */
+  myUserId?: string
+  /** T018: 发送失败后重试最后一条用户消息 */
+  onRetryLast?: () => void
 }
 
 /** 高亮搜索关键词 */
@@ -66,10 +102,13 @@ export const Chat: React.FC<ChatProps> = ({
   deepThinkProgress,
   serverConnected,
   serverConnecting,
+  activated,
   messages,
   isVoiceMode,
   smcpTarget,
   smcpGroupTarget,
+  myUserId,
+  onRetryLast,
 }) => {
   const isSmcp = !!(smcpTarget || smcpGroupTarget)
   const [input, setInput] = useState('')
@@ -79,11 +118,22 @@ export const Chat: React.FC<ChatProps> = ({
   const [feishuOutput, setFeishuOutput] = useState(false)
   const [showGroupMembers, setShowGroupMembers] = useState(false)
   const [groupMembers, setGroupMembers] = useState<{ userId: string; role: string; accountName?: string; siliconId?: string }[]>([])
+  const [showGroupManage, setShowGroupManage] = useState(false) // 群管理面板
+  const [editingGroupName, setEditingGroupName] = useState(false)
+  const [newGroupName, setNewGroupName] = useState('')
   const [showSearch, setShowSearch] = useState(false)
   const [searchQuery, setSearchQuery] = useState('')
+  const [showMention, setShowMention] = useState(false)
+  const [mentionFilter, setMentionFilter] = useState('')
+  const [showCapabilities, setShowCapabilities] = useState(false)
+  const [capabilities, setCapabilities] = useState<CapabilityInfo[]>([])
+  const [taskApprovalRequest, setTaskApprovalRequest] = useState<any>(null)
+  const [activeMultiStepTask, setActiveMultiStepTask] = useState<string | null>(null)
+  const [multiStepSteps, setMultiStepSteps] = useState<TaskStep[]>([])
   const messagesEndRef = useRef<HTMLDivElement>(null)
   const inputRef = useRef<HTMLInputElement>(null)
   const invoke = (window as any).__TAURI__?.core?.invoke
+  const listen = (window as any).__TAURI__?.event?.listen
 
   // Microphone availability check via Web Speech API
   const [isRecording, setIsRecording] = useState(false)
@@ -102,12 +152,114 @@ export const Chat: React.FC<ChatProps> = ({
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  // Listen for task-result events from Tauri backend
+  useEffect(() => {
+    if (!listen || isSmcp) return
+
+    let unlistenTaskResult: (() => void) | null = null
+    let unlistenRemoteResult: (() => void) | null = null
+    let unlistenApproval: (() => void) | null = null
+    let unlistenTaskStep: (() => void) | null = null
+
+    // Local task execution result
+    listen('task-result', (event: any) => {
+      const result: TaskResult = event.payload
+      console.log('[chat] task-result event:', result)
+    }).then((fn: () => void) => { unlistenTaskResult = fn })
+
+    // Remote task result
+    listen('remote-task-result', (event: any) => {
+      const result = event.payload
+      console.log('[chat] remote-task-result:', result)
+    }).then((fn: () => void) => { unlistenRemoteResult = fn })
+
+    // Task approval request
+    listen('task-approval-request', (event: any) => {
+      const request = event.payload
+      setTaskApprovalRequest(request)
+    }).then((fn: () => void) => { unlistenApproval = fn })
+
+    // Multi-step task progress (Computer Use)
+    listen('task-step', (event: any) => {
+      const { task_id, step } = event.payload
+      if (task_id && step) {
+        setActiveMultiStepTask(task_id)
+        setMultiStepSteps(prev => [...prev, {
+          step_num: step.step_num,
+          description: step.action || step.capability,
+          screenshot: step.screenshot,
+          status: step.status,
+        }])
+      }
+    }).then((fn: () => void) => { unlistenTaskStep = fn })
+
+    return () => {
+      if (unlistenTaskResult) unlistenTaskResult()
+      if (unlistenRemoteResult) unlistenRemoteResult()
+      if (unlistenApproval) unlistenApproval()
+      if (unlistenTaskStep) unlistenTaskStep()
+    }
+  }, [listen, isSmcp])
+
   const handleSend = () => {
     const text = input.trim()
     if (!text && imageAttachments.length === 0) return
-    onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput)
+    // 提取@提及的成员名
+    const mentions = text.match(/@(\S+)/g)?.map(m => m.slice(1)) || []
+
+    // Agent指令识别：检测task关键词，拦截到task_execute
+    const taskCapability = detectAgentCommand(text)
+    if (taskCapability && !isSmcp && invoke) {
+      // 构建task params
+      const taskParams = buildTaskParams(taskCapability, text)
+      // 执行task，由App.tsx的onSendMessage处理路由
+      onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput, mentions.length > 0 ? mentions : undefined, taskCapability, taskParams)
+      setInput('')
+      setImageAttachments([])
+      return
+    }
+
+    onSendMessage(text, imageAttachments.length > 0 ? imageAttachments : undefined, deepThinkMode, feishuOutput, mentions.length > 0 ? mentions : undefined)
     setInput('')
     setImageAttachments([])
+  }
+
+  /** Agent指令识别：关键词匹配 */
+  const detectAgentCommand = (text: string): string | null => {
+    const lower = text.toLowerCase()
+    if (lower.includes('截屏') || lower.includes('截图') || lower.includes('screenshot')) return 'screenshot'
+    if (lower.includes('打开')) return 'app.open'
+    if (lower.includes('读文件') || lower.includes('读取文件')) return 'file.read'
+    if (lower.includes('执行') || lower.includes('运行') || lower.includes('跑一下')) return 'shell.exec'
+    if (lower.includes('识别文字') || lower.includes('文字识别') || lower.includes('ocr')) return 'ocr'
+    if (lower.includes('发到飞书') || lower.includes('发飞书') || lower.includes('发送飞书')) return 'feishu.send'
+    if (lower.includes('你能做什么') || lower.includes('你会什么') || lower.includes('列出能力')) return 'list_capabilities'
+    return null
+  }
+
+  /** 构建task参数 */
+  const buildTaskParams = (capability: string, text: string): any => {
+    const lower = text.toLowerCase()
+    switch (capability) {
+      case 'screenshot':
+        return {}
+      case 'app.open': {
+        const appName = text.replace(/打开|开启|启动/gi, '').trim()
+        return { app_name: appName }
+      }
+      case 'file.read': {
+        const pathMatch = text.match(/读(?:取)?文件?\s*(.+)/)
+        return { path: pathMatch ? pathMatch[1].trim() : '' }
+      }
+      case 'shell.exec': {
+        const cmdMatch = text.match(/(?:执行|运行|跑一下)\s*(.+)/)
+        return { command: cmdMatch ? cmdMatch[1].trim() : '' }
+      }
+      case 'ocr':
+        return { image_path: '' }
+      default:
+        return {}
+    }
   }
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -118,6 +270,38 @@ export const Chat: React.FC<ChatProps> = ({
   }
 
   const handleFileSelect = async () => {
+    // v4.1.1: Android走原生<input type=file>(WebView由Kotlin onShowFileChooser拉起系统选择器)
+    // 桌面Tauri的plugin-dialog在Android适配层不存在 → 之前点了没下文
+    if ((window as any).NativeBridge) {
+      const input = document.createElement('input')
+      input.type = 'file'
+      input.accept = 'image/*'
+      input.onchange = () => {
+        const file = input.files?.[0]
+        if (!file) return
+        setIsProcessingImage(true)
+        const reader = new FileReader()
+        reader.onload = () => {
+          const dataUrl = String(reader.result || '')
+          setImageAttachments(prev => [...prev, {
+            path: file.name,
+            name: file.name,
+            ocr_text: null,
+            ocr_status: 'not_available' as const,
+            file_size: file.size,
+            data: dataUrl.split(',')[1] || '', // base64, SMCP发送直接用
+          }])
+          setIsProcessingImage(false)
+        }
+        reader.onerror = () => {
+          console.error('[file] read error:', reader.error)
+          setIsProcessingImage(false)
+        }
+        reader.readAsDataURL(file)
+      }
+      input.click()
+      return
+    }
     try {
       const selected = await open({
         multiple: false,
@@ -173,11 +357,14 @@ export const Chat: React.FC<ChatProps> = ({
     }
   })()
 
+  // 移动端自适应：窄屏隐藏非核心按钮，避免输入栏挤爆（横屏已锁定，宽度仅在键盘弹出外不变）
+  const isMobile = typeof window !== 'undefined' && window.innerWidth <= 480
+
   return (
     <div style={{
       display: 'flex',
       flexDirection: 'column',
-      height: '100vh',
+      height: '100%',
       background: '#0f1115',
       color: '#e6e6e6',
       fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
@@ -185,6 +372,8 @@ export const Chat: React.FC<ChatProps> = ({
       {/* Header */}
       <header style={{
         padding: '14px 20px',
+        // 52px避让左上角浮层按钮区(汉堡8-42px/虾群按钮8-42px), 防止遮住标题"硅侣"
+        paddingLeft: '52px',
         background: 'linear-gradient(90deg, #1a2a4a, #0f1115)',
         borderBottom: '1px solid #222',
         display: 'flex',
@@ -248,70 +437,150 @@ export const Chat: React.FC<ChatProps> = ({
         >
           🔍
         </button>
-        {isVoiceMode && (
-          <span style={{
-            fontSize: '12px',
-            color: '#2ecc71',
-            marginLeft: 'auto',
-          }}>
-            🎤 语音聊天模式
-          </span>
-        )}
-        {/* Server connection status indicator */}
-        <span style={{
-          fontSize: '11px',
-          color: serverConnecting ? '#f39c12' : serverConnected ? '#2ecc71' : '#e74c3c',
-          marginLeft: isVoiceMode ? '8px' : 'auto',
-          display: 'flex',
-          alignItems: 'center',
-          gap: '4px',
-        }}>
-          <span style={{
-            width: '6px', height: '6px', borderRadius: '50%',
-            background: serverConnecting ? '#f39c12' : serverConnected ? '#2ecc71' : '#e74c3c',
-            display: 'inline-block',
-          }} />
-          {serverConnecting ? '连接中…' : serverConnected ? '服务端已连接' : '服务端未连接(深度思考不可用)'}
-        </span>
+        {/* T029: 连接状态三态 — 未激活(灰)/已连接(绿)/离线(红)+连接中(琥珀), FR-014 真实心跳驱动 */}
+        {(() => {
+          // 三态优先级: 未激活 > 连接中 > 已连接/离线
+          const st = !activated
+            ? { color: '#7a8aa0', dot: '#7a8aa0', text: '未激活 · 云端功能未启用' }
+            : serverConnecting
+              ? { color: '#f39c12', dot: '#f39c12', text: '连接中…' }
+              : serverConnected
+                ? { color: '#2ecc71', dot: '#2ecc71', text: '已连接' }
+                : { color: '#e74c3c', dot: '#e74c3c', text: '离线 · 重连中…' }
+          return (
+            <span style={{
+              fontSize: '11px',
+              color: st.color,
+              marginLeft: isVoiceMode ? '8px' : 'auto',
+              display: 'flex',
+              alignItems: 'center',
+              gap: '4px',
+            }}>
+              <span style={{
+                width: '6px', height: '6px', borderRadius: '50%',
+                background: st.dot,
+                display: 'inline-block',
+              }} />
+              {st.text}
+            </span>
+          )
+        })()}
       </header>
 
-      {/* 群成员面板 */}
+      {/* 群成员/管理面板 */}
       {smcpGroupTarget && showGroupMembers && (
         <div style={{
           padding: '8px 20px',
           background: '#141820',
           borderBottom: '1px solid #222',
-          display: 'flex',
-          flexWrap: 'wrap',
-          gap: '6px',
-          maxHeight: '120px',
+          maxHeight: '200px',
           overflowY: 'auto',
         }}>
+          {/* 群名编辑 */}
+          {editingGroupName ? (
+            <div style={{ display: 'flex', gap: '6px', alignItems: 'center', marginBottom: '8px' }}>
+              <input
+                value={newGroupName}
+                onChange={e => setNewGroupName(e.target.value)}
+                style={{ flex: 1, background: '#1c2030', border: '1px solid #3a3a4a', borderRadius: '4px', color: '#fff', padding: '4px 8px', fontSize: '12px' }}
+                placeholder="新群名"
+              />
+              <button onClick={async () => {
+                if (newGroupName.trim()) {
+                  const r = await updateGroup(smcpGroupTarget.groupId, newGroupName.trim())
+                  if (r.ok) {
+                    smcpGroupTarget.groupName = newGroupName.trim()
+                    setEditingGroupName(false)
+                  } else { alert(r.error || '修改失败') }
+                }
+              }} style={{ padding: '4px 8px', background: '#2a5cff', color: '#fff', border: 'none', borderRadius: '4px', fontSize: '11px' }}>保存</button>
+              <button onClick={() => setEditingGroupName(false)} style={{ padding: '4px 8px', background: '#333', color: '#999', border: 'none', borderRadius: '4px', fontSize: '11px' }}>取消</button>
+            </div>
+          ) : (
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+              <span style={{ color: '#e6e6e6', fontSize: '12px', fontWeight: 600 }}>👥 {smcpGroupTarget.groupName}</span>
+              {(() => {
+                const myRole = groupMembers.find(m => m.userId === myUserId)?.role
+                return myRole === 'owner' || myRole === 'admin' ? (
+                  <button onClick={() => { setNewGroupName(smcpGroupTarget.groupName); setEditingGroupName(true) }} style={{ padding: '2px 6px', background: '#1c2030', border: '1px solid #3a3a4a', borderRadius: '4px', color: '#8ab4ff', fontSize: '10px' }}>✏️ 改名</button>
+                ) : null
+              })()}
+            </div>
+          )}
+          {/* 成员列表 */}
           {groupMembers.length === 0 && (
             <span style={{ fontSize: '11px', color: '#555' }}>加载中…</span>
           )}
-          {groupMembers.map(m => (
-            <div key={m.userId} style={{
-              background: '#1c2030',
-              border: '1px solid #2a2a3a',
-              borderRadius: '8px',
-              padding: '4px 8px',
-              display: 'flex',
-              alignItems: 'center',
-              gap: '4px',
-              fontSize: '11px',
-            }}>
-              <span style={{ color: m.role === 'owner' ? '#f39c12' : '#2a5cff', fontWeight: 600 }}>
-                {m.role === 'owner' ? '👑' : '👤'}
-              </span>
-              <span style={{ color: '#e6e6e6' }}>{m.accountName || m.userId.slice(0, 8)}</span>
-              {m.siliconId && (
-                <span style={{ color: '#555', fontSize: '9px' }}>({m.siliconId})</span>
-              )}
-            </div>
-           ))}
-         </div>
-       )}
+          {groupMembers.map(m => {
+            const myRole = groupMembers.find(me => me.userId === myUserId)?.role
+            const canManage = myRole === 'owner' || (myRole === 'admin' && m.role === 'member')
+            const canKick = myRole === 'owner' || (myRole === 'admin' && m.role === 'member')
+            const canSetAdmin = myRole === 'owner' && m.userId !== myUserId
+            const canTransfer = myRole === 'owner' && m.userId !== myUserId
+            
+            return (
+              <div key={m.userId} style={{
+                background: '#1c2030',
+                border: '1px solid #2a2a3a',
+                borderRadius: '8px',
+                padding: '4px 8px',
+                display: 'flex',
+                alignItems: 'center',
+                gap: '4px',
+                fontSize: '11px',
+                marginBottom: '4px',
+              }}>
+                <span style={{ color: m.role === 'owner' ? '#f39c12' : m.role === 'admin' ? '#e74c3c' : '#2a5cff', fontWeight: 600 }}>
+                  {m.role === 'owner' ? '👑' : m.role === 'admin' ? '🛡️' : '👤'}
+                </span>
+                <span style={{ color: '#e6e6e6' }}>{m.accountName || m.userId.slice(0, 8)}</span>
+                {m.siliconId && (
+                  <span style={{ color: '#555', fontSize: '9px' }}>({m.siliconId})</span>
+                )}
+                {m.role !== 'owner' && m.role !== 'member' && m.role === 'admin' && (
+                  <span style={{ color: '#e74c3c', fontSize: '9px', fontWeight: 600 }}>管理员</span>
+                )}
+                {/* 操作按钮 */}
+                {canKick && m.userId !== myUserId && (
+                  <button onClick={async () => {
+                    if (confirm(`确定踢出 ${m.accountName || m.userId.slice(0, 8)}？`)) {
+                      const r = await kickGroupMember(smcpGroupTarget.groupId, m.userId)
+                      if (r.ok) { setGroupMembers(prev => prev.filter(x => x.userId !== m.userId)) }
+                      else { alert(r.error || '踢出失败') }
+                    }
+                  }} style={{ marginLeft: 'auto', padding: '1px 5px', background: '#5c1a1a', border: '1px solid #e74c3c', borderRadius: '3px', color: '#e74c3c', fontSize: '9px' }}>踢出</button>
+                )}
+                {canSetAdmin && m.role === 'member' && (
+                  <button onClick={async () => {
+                    const r = await setGroupMemberRole(smcpGroupTarget.groupId, m.userId, 'admin')
+                    if (r.ok) { setGroupMembers(prev => prev.map(x => x.userId === m.userId ? { ...x, role: 'admin' } : x)) }
+                    else { alert(r.error || '设置失败') }
+                  }} style={{ marginLeft: '4px', padding: '1px 5px', background: '#1a3c5c', border: '1px solid #3498db', borderRadius: '3px', color: '#3498db', fontSize: '9px' }}>设管理</button>
+                )}
+                {canSetAdmin && m.role === 'admin' && (
+                  <button onClick={async () => {
+                    const r = await setGroupMemberRole(smcpGroupTarget.groupId, m.userId, 'member')
+                    if (r.ok) { setGroupMembers(prev => prev.map(x => x.userId === m.userId ? { ...x, role: 'member' } : x)) }
+                    else { alert(r.error || '取消失败') }
+                  }} style={{ marginLeft: '4px', padding: '1px 5px', background: '#3c3c1a', border: '1px solid #f39c12', borderRadius: '3px', color: '#f39c12', fontSize: '9px' }}>撤管理</button>
+                )}
+                {canTransfer && (
+                  <button onClick={async () => {
+                    if (confirm(`确定将群主转让给 ${m.accountName || m.userId.slice(0, 8)}？你将变为管理员`)) {
+                      const r = await transferGroupOwner(smcpGroupTarget.groupId, m.userId)
+                      if (r.ok) {
+                        // 刷新成员列表
+                        const info = await getGroupInfo(smcpGroupTarget.groupId)
+                        if (info.members) setGroupMembers(info.members.map((mm: any) => ({ userId: mm.user_id, role: mm.role, accountName: mm.account_name, siliconId: mm.silicon_id })))
+                      } else { alert(r.error || '转让失败') }
+                    }
+                  }} style={{ marginLeft: '4px', padding: '1px 5px', background: '#1a5c3c', border: '1px solid #2ecc71', borderRadius: '3px', color: '#2ecc71', fontSize: '9px' }}>转让</button>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
 
       {/* 消息搜索面板 */}
       {showSearch && (
@@ -391,6 +660,17 @@ export const Chat: React.FC<ChatProps> = ({
           // Detect group sender name (pattern: 👥 senderName: content or 🦐 prefix)
           const groupSenderMatch = isSmcp && !isUser && msg.content.match(/^(👥|🦐)\s*([^\s:：]+)[：:]\s*([\s\S]*)$/)
 
+          // Task result message styling
+          const isTaskResult = msg.is_task_result === true
+          const tierIcon = msg.execution_tier === 'native' ? '⚡' :
+                           msg.execution_tier === 'nuphus' ? '🤖' :
+                           msg.execution_tier === 'freecode' ? '🧠' :
+                           msg.execution_tier === 'fallback' ? '⚠️' : ''
+          const tierBorder = msg.execution_tier === 'native' ? '#4CAF50' :
+                             msg.execution_tier === 'nuphus' ? '#2196F3' :
+                             msg.execution_tier === 'freecode' ? '#9C27B0' :
+                             msg.execution_tier === 'fallback' ? '#FF9800' : ''
+
           return (
             <div
               key={msg.id}
@@ -414,21 +694,81 @@ export const Chat: React.FC<ChatProps> = ({
               )}
               <div
                 style={{
-                  maxWidth: '70%',
+                  maxWidth: isTaskResult ? '85%' : '70%',
                   padding: '10px 14px',
                   borderRadius: '10px',
                   lineHeight: '1.6',
                   fontSize: '14px',
                   whiteSpace: 'pre-wrap',
                   wordBreak: 'break-word',
-                  background: isUser ? '#2a5cff' : '#2a2a3a',
+                  background: isUser ? '#2a5cff' :
+                             isTaskResult ? '#1a2a1a' : '#2a2a3a',
                   color: '#fff',
                   borderBottomRightRadius: isUser ? '4px' : undefined,
                   borderBottomLeftRadius: !isUser ? '4px' : undefined,
                   opacity: isSearchDim ? 0.3 : 1,
+                  ...(isTaskResult && tierBorder ? { borderLeft: `3px solid ${tierBorder}` } : {}),
                 }}
               >
-                {isFileMsg ? (
+                {isTaskResult ? (
+                  /* Task result message rendering */
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                      <span style={{ fontSize: '16px' }}>{tierIcon}</span>
+                      <span style={{ fontWeight: 600, color: tierBorder || '#fff' }}>
+                        {msg.task_status === 'success' ? '执行成功' :
+                         msg.task_status === 'error' ? '执行失败' :
+                         msg.task_status === 'rejected' ? '已拒绝' :
+                         msg.task_status === 'timeout' ? '超时' : msg.task_status}
+                      </span>
+                      {msg.duration_ms != null && (
+                        <span style={{ fontSize: '11px', color: '#aaa' }}>
+                          ({msg.duration_ms < 1000 ? `${msg.duration_ms}ms` : `${(msg.duration_ms / 1000).toFixed(1)}秒`})
+                        </span>
+                      )}
+                    </div>
+                    <div>{msg.content}</div>
+                    {/* Screenshots */}
+                    {msg.screenshots && msg.screenshots.length > 0 && (
+                      <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                        {msg.screenshots.map((src, i) => (
+                          <img key={i} src={`data:image/png;base64,${src}`}
+                            style={{ maxWidth: '100%', borderRadius: '4px', border: '1px solid #333' }}
+                            alt={`截图 ${i + 1}`}
+                          />
+                        ))}
+                      </div>
+                    )}
+                    {/* Multi-step execution */}
+                    {msg.steps && msg.steps.length > 0 && (
+                      <div style={{ marginTop: '6px' }}>
+                        {msg.steps.map((step, i) => (
+                          <div key={i} style={{
+                            background: '#0f1115',
+                            borderRadius: '4px',
+                            padding: '4px 8px',
+                            marginBottom: '4px',
+                            borderLeft: '2px solid #2a5cff',
+                          }}>
+                            <span style={{ fontSize: '11px', color: '#7a8aa0' }}>步骤{step.step_num}:</span>
+                            <span style={{ fontSize: '12px', marginLeft: '4px' }}>{step.description}</span>
+                            {step.screenshot && (
+                              <img src={`data:image/png;base64,${step.screenshot}`}
+                                style={{ maxWidth: '100%', borderRadius: '4px', marginTop: '2px' }}
+                                alt={`步骤${step.step_num}`}
+                              />
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    {msg.error_message && (
+                      <div style={{ color: '#e74c3c', fontSize: '12px', marginTop: '4px' }}>
+                        ⚠️ {msg.error_message}
+                      </div>
+                    )}
+                  </div>
+                ) : isFileMsg ? (
                   <div
                     onClick={() => {
                       if (fileMatch) {
@@ -494,8 +834,29 @@ export const Chat: React.FC<ChatProps> = ({
             color: status === 'deep_thinking' ? '#9b59b6' : '#7a8aa0',
             fontSize: '13px',
             fontStyle: 'italic',
+            display: 'flex',
+            alignItems: 'center',
+            gap: '8px',
           }}>
             {statusText}
+            {/* T018: 超时/断网错误 → 一键重试最后一条用户消息 */}
+            {status === 'error' && onRetryLast && (
+              <button
+                onClick={onRetryLast}
+                style={{
+                  padding: '3px 12px',
+                  borderRadius: '6px',
+                  border: '1px solid #3d5afe',
+                  background: 'rgba(61, 90, 254, 0.15)',
+                  color: '#7a9bff',
+                  fontSize: '12px',
+                  fontStyle: 'normal',
+                  cursor: 'pointer',
+                }}
+              >
+                ↻ 重试
+              </button>
+            )}
           </div>
         )}
 
@@ -568,11 +929,78 @@ export const Chat: React.FC<ChatProps> = ({
       )}
 
       {/* Input bar */}
+      {/* @提及弹出面板 */}
+      {showMention && smcpGroupTarget && (
+        <div style={{
+          position: 'absolute',
+          bottom: '70px',
+          left: '20px',
+          background: '#1c2030',
+          border: '1px solid #333',
+          borderRadius: '10px',
+          padding: '6px 0',
+          maxHeight: '200px',
+          overflowY: 'auto',
+          zIndex: 100,
+          minWidth: '180px',
+          boxShadow: '0 4px 16px rgba(0,0,0,0.5)',
+        }}>
+          <div style={{ padding: '4px 12px', fontSize: '11px', color: '#666' }}>选择要@的成员</div>
+          {groupMembers
+            .filter(m => {
+              const name = m.accountName || m.siliconId || m.userId
+              return !mentionFilter || name.toLowerCase().includes(mentionFilter.toLowerCase())
+            })
+            .map(m => {
+              const name = m.accountName || m.siliconId || m.userId
+              return (
+                <div
+                  key={m.userId}
+                  onClick={() => {
+                    // 替换@后面的文字为选中的名字
+                    const lastAtIndex = input.lastIndexOf('@')
+                    if (lastAtIndex >= 0) {
+                      setInput(input.slice(0, lastAtIndex) + `@${name} `)
+                    } else {
+                      setInput(input + `@${name} `)
+                    }
+                    setShowMention(false)
+                    setMentionFilter('')
+                    inputRef.current?.focus()
+                  }}
+                  style={{
+                    padding: '6px 12px',
+                    cursor: 'pointer',
+                    color: '#e6e6e6',
+                    fontSize: '13px',
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '6px',
+                  }}
+                  onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#252840'}
+                  onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
+                >
+                  <span style={{ fontSize: '10px', color: '#666' }}>{m.role === 'owner' ? '👑' : '👤'}</span>
+                  <span>{name}</span>
+                  {m.siliconId && <span style={{ fontSize: '10px', color: '#555' }}>{m.siliconId}</span>}
+                </div>
+              )
+            })
+          }
+          {groupMembers.filter(m => {
+            const name = m.accountName || m.siliconId || m.userId
+            return !mentionFilter || name.toLowerCase().includes(mentionFilter.toLowerCase())
+          }).length === 0 && (
+            <div style={{ padding: '6px 12px', color: '#666', fontSize: '12px' }}>无匹配成员</div>
+          )}
+        </div>
+      )}
+
       <div style={{
         display: 'flex',
-        padding: '14px 20px',
+        padding: isMobile ? '10px 10px' : '14px 20px',
         borderTop: '1px solid #222',
-        gap: '10px',
+        gap: isMobile ? '6px' : '10px',
       }}>
         {/* SMCP标识 */}
         {isSmcp && (
@@ -609,26 +1037,7 @@ export const Chat: React.FC<ChatProps> = ({
           📎
         </button>
 
-        {/* Voice chat button — only for local chat */}
-        {!isSmcp && (
-        <button
-          onClick={onVoiceChat}
-          title={isVoiceMode ? '返回日常对话' : '语音聊天'}
-          style={{
-            background: isVoiceMode ? '#2ecc71' : '#2a2a3a',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            padding: '0 16px',
-            cursor: 'pointer',
-            fontSize: '16px',
-          }}
-        >
-          🗣️
-        </button>
-        )}
-
-        {/* ChatGPT button — only for local chat */}
+        {/* ChatGPT button — local chat; desktop opens Safari, Android opens system browser (v4.1.1: 手机可见, 替代语音输入) */}
         {!isSmcp && (
         <button
           onClick={async () => {
@@ -658,7 +1067,7 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Deep think toggle — only for local chat */}
+        {/* Deep think toggle — local chat (v4.1.1: 手机放开, AgentChat在服务端执行与端无关) */}
         {!isSmcp && (
         <button
           onClick={() => {
@@ -686,8 +1095,8 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Feishu output toggle — only for local chat */}
-        {!isSmcp && (
+        {/* Feishu output toggle — only for local chat, desktop only */}
+        {!isSmcp && !isMobile && (
         <button
           onClick={() => setFeishuOutput(!feishuOutput)}
           title={feishuOutput ? '关闭飞书输出' : '输出到飞书文档/消息'}
@@ -706,37 +1115,44 @@ export const Chat: React.FC<ChatProps> = ({
         </button>
         )}
 
-        {/* Microphone button — only for local chat */}
-        {!isSmcp && (
-        <button
-          onClick={handleMicInput}
-          title={isRecording ? '停止语音输入' : '语音输入'}
-          style={{
-            background: isRecording ? '#e74c3c' : '#2a2a3a',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            padding: '0 16px',
-            cursor: 'pointer',
-            fontSize: '16px',
-            opacity: 1,
-            animation: isRecording ? 'pulse 1.5s ease-in-out infinite' : 'none',
-          }}
-        >
-          🎤
-        </button>
-        )}
+        {/* v4.1.1: 🎤语音输入按钮已移除 — 手机系统键盘自带语音输入, ChatGPT按钮替代 */}
 
         {/* Text input */}
         <input
           ref={inputRef}
           value={input}
-          onChange={e => setInput(e.target.value)}
-          onKeyDown={handleKeyDown}
+          onChange={e => {
+            const val = e.target.value
+            setInput(val)
+            // @提及触发：群聊中输入@时弹出成员列表
+            if (smcpGroupTarget) {
+              const lastAtIndex = val.lastIndexOf('@')
+              if (lastAtIndex >= 0 && (lastAtIndex === 0 || val[lastAtIndex - 1] === ' ')) {
+                const filter = val.slice(lastAtIndex + 1)
+                if (!filter.includes(' ')) {
+                  setMentionFilter(filter)
+                  setShowMention(true)
+                  return
+                }
+              }
+              setShowMention(false)
+            }
+          }}
+          onKeyDown={e => {
+            if (showMention && e.key === 'Escape') {
+              setShowMention(false)
+              return
+            }
+            if (e.key === 'Enter' && !e.shiftKey) {
+              e.preventDefault()
+              handleSend()
+            }
+          }}
           placeholder={smcpGroupTarget ? `给 ${smcpGroupTarget.groupName} 发消息…` : smcpTarget ? `给 ${smcpTarget.role} 发消息…` : '说点什么…'}
           autoFocus
           style={{
             flex: 1,
+            minWidth: 0,
             background: '#1c2030',
             border: '1px solid #333',
             borderRadius: '10px',
@@ -756,10 +1172,11 @@ export const Chat: React.FC<ChatProps> = ({
             color: '#fff',
             border: 'none',
             borderRadius: '10px',
-            padding: '0 22px',
+            padding: isMobile ? '0 14px' : '0 22px',
             fontSize: '14px',
             cursor: (status === 'thinking' || status === 'deep_thinking') ? 'not-allowed' : 'pointer',
             opacity: (status === 'thinking' || status === 'deep_thinking') ? 0.6 : 1,
+            flexShrink: 0,
           }}
         >
           {isSmcp ? '🦐 发送' : '发送'}

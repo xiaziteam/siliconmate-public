@@ -27,6 +27,15 @@ pub struct AccountClient {
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct AccountInfo {
+    pub account_id: String,
+    #[serde(default)]
+    pub account_name: Option<String>,
+    #[serde(default)]
+    pub silicon_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct LoginResponse {
     pub account_id: String,
     pub api_key: String,
@@ -37,6 +46,10 @@ pub struct LoginResponse {
     pub plan: Option<String>,
     #[serde(default)]
     pub tunnel: Option<TunnelConfig>,
+    #[serde(default)]
+    pub silicon_id: Option<String>,
+    #[serde(default)]
+    pub account_name: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -132,6 +145,15 @@ impl AccountClient {
     {
         self.post_json("/v1/code/validate", &serde_json::json!({
             "code": code, "device_id": device_id, "product": "siliconmate",
+        })).await
+    }
+
+    /// POST /v1/account/info → account_name/silicon_id (冷启动恢复用, 宽松鉴权)
+    pub async fn get_account_info(&self, account_or_session_id: &str)
+        -> Result<AccountInfo, AccountError>
+    {
+        self.post_json("/v1/account/info", &serde_json::json!({
+            "account_id": account_or_session_id,
         })).await
     }
 

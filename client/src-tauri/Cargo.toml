@@ -1,6 +1,6 @@
 [package]
 name = "siliconmate"
-version = "3.3.0"
+version = "4.2.1"
 edition = "2021"
 description = "硅侣3.0 — 双Agent极简AI助手 (V2+V1融合)"
 
@@ -23,6 +23,14 @@ tungstenite = "0.24"
 account-client = { path = "account-client" }
 anyhow = "1"
 log = "0.4"
+uuid = { version = "1", features = ["v4"] }
+chrono = { version = "0.4", features = ["serde"] }
+
+# Nuphus DesktopClient integration (Agent capability engine)
+# desktop-api provides DesktopApi/SessionManager for Computer Use
+# On macOS, native_cmds provide primary capability; nuphus adds deep Computer Use when available
+nuphus = { path = "/Users/apple/nuphus/src" }
+desktop-api = { path = "/Users/apple/nuphus/src-tauri/crates/desktop-api" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.15"

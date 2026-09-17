@@ -25,6 +25,8 @@ export interface SmcpPendingRequest {
   message: string
   proposed_perms: any
   created_at: string
+  from_silicon_id?: string
+  from_name?: string
 }
 
 export interface SmcpAgent {
@@ -201,6 +203,17 @@ export async function acceptFriendRequest(
   }
 }
 
+/** 拒绝好友请求 (T027) */
+export async function rejectFriendRequest(requestId: string): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  try {
+    return await inv('smcp_friend_reject', { requestId })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
 /** 设置好友权限 */
 export async function setFriendPermissions(
   friendUserId: string,
@@ -283,6 +296,12 @@ export function startPolling(
 ): void {
   stopPolling()
   _onMessage = onMessage
+  // T023: Android 上由 Kotlin SmcpAgentService 权威轮询 — 服务端 message/poll 是消费型队列
+  // (delivered=0→1), JS 与 Kotlin 双端轮询会互相抢消息; 消息经 onSmcpMessages 事件进入前端
+  if ((window as any).NativeBridge) {
+    console.log('[SMCP] Android: JS polling disabled — Kotlin SmcpAgentService is the authoritative poller')
+    return
+  }
   console.log('[SMCP] startPolling: _registered=' + _registered)
   _pollTimer = setInterval(async () => {
     if (!_registered) return
@@ -404,6 +423,55 @@ export async function leaveGroup(groupId: string): Promise<{ ok: boolean; error?
   }
 }
 
+/** 踢出群成员 */
+export async function kickGroupMember(groupId: string, userId: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_kick', { groupId, userId })
+    const data = result?.data || result
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** 转让群主 */
+export async function transferGroupOwner(groupId: string, userId: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_transfer', { groupId, userId })
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** 设置成员角色 (admin/member) */
+export async function setGroupMemberRole(groupId: string, userId: string, role: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_set_role', { groupId, userId, role })
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
+/** 修改群信息 */
+export async function updateGroup(groupId: string, name?: string): Promise<{ ok: boolean; error?: string }> {
+  const inv = invoke()
+  if (!inv) return { ok: false, error: 'Tauri not available' }
+  try {
+    const result = await inv('smcp_group_update', { groupId, name })
+    return { ok: result?.ok !== false }
+  } catch (e) {
+    return { ok: false, error: String(e) }
+  }
+}
+
 /** 向群发消息 */
 export async function sendGroupMessage(
   groupId: string,
@@ -458,7 +526,7 @@ export async function uploadFile(
 
 /** 获取文件下载URL */
 export function getFileDownloadUrl(fileId: string): string {
-  return `https://<YOUR_SERVER_HOST>/v1/smcp/file/download/${fileId}`
+  return `https://locatenotify.online/v1/smcp/file/download/${fileId}`
 }
 
 // ===== OCR + 文件选择 =====
@@ -528,4 +596,187 @@ export function formatTime(timestamp: number): string {
   const hh = String(d.getHours()).padStart(2, '0')
   const mm = String(d.getMinutes()).padStart(2, '0')
   return `${hh}:${mm}`
+}
+
+// ===== Task/Result 消息协议 (Agent能力) =====
+
+export interface TaskResult {
+  task_id: string
+  status: string        // "success" | "error" | "rejected" | "timeout"
+  data: any
+  screenshots: string[]  // base64 encoded
+  error_message: string | null
+  execution_tier: string // "native" | "nuphus" | "freecode" | "fallback"
+  duration_ms: number
+  created_at: number
+}
+
+export interface CapabilityInfo {
+  name: string
+  tier: string
+  description: string
+  available: boolean
+}
+
+/** 执行本地task（三层路由：原生→Nuphus→降级） */
+export async function taskExecute(capability: string, params: any = {}): Promise<TaskResult> {
+  const inv = invoke()
+  if (!inv) return {
+    task_id: '',
+    status: 'error',
+    data: {},
+    screenshots: [],
+    error_message: 'Tauri not available',
+    execution_tier: 'none',
+    duration_ms: 0,
+    created_at: Date.now(),
+  }
+  try {
+    return await inv('task_execute', { capability, params }) as TaskResult
+  } catch (e: any) {
+    return {
+      task_id: '',
+      status: 'error',
+      data: {},
+      screenshots: [],
+      error_message: String(e),
+      execution_tier: 'none',
+      duration_ms: 0,
+      created_at: Date.now(),
+    }
+  }
+}
+
+/** 发送task给好友 */
+export async function taskSend(
+  friendAgentId: string,
+  friendUserId: string,
+  capability: string,
+  params: any = {}
+): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  try {
+    const taskId = `task_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
+    return await inv('smcp_task_send', {
+      toAgent: friendAgentId,
+      toUser: friendUserId,
+      taskId,
+      capability,
+      params,
+    })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
+/** 列出本机可用能力 */
+export async function listCapabilities(): Promise<CapabilityInfo[]> {
+  const inv = invoke()
+  if (!inv) return []
+  try {
+    return await inv('task_list_capabilities') as CapabilityInfo[]
+  } catch (e) {
+    console.warn('[SMCP] listCapabilities failed:', e)
+    return []
+  }
+}
+
+/** 检查权限策略 */
+export async function permissionCheck(friendId: string, capability: string): Promise<string> {
+  const inv = invoke()
+  if (!inv) return 'ask'
+  try {
+    const result = await inv('permission_check', { friendId, capability })
+    return result?.policy || 'ask'
+  } catch (e) {
+    return 'ask'
+  }
+}
+
+/** 设置权限策略 */
+export async function permissionSet(friendId: string, capability: string, policy: string): Promise<boolean> {
+  const inv = invoke()
+  if (!inv) return false
+  try {
+    const result = await inv('permission_set', { friendId, capability, policy })
+    return result?.success || false
+  } catch (e) {
+    return false
+  }
+}
+
+/** 检查远程task审批超时 */
+export async function taskCheckTimeouts(): Promise<string[]> {
+  const inv = invoke()
+  if (!inv) return []
+  try {
+    return await inv('task_check_timeouts') as string[]
+  } catch (e) {
+    console.warn('[SMCP] taskCheckTimeouts failed:', e)
+    return []
+  }
+}
+
+/** 移除已审批的挂起远程task */
+export async function taskRemovePendingRemote(taskId: string): Promise<boolean> {
+  const inv = invoke()
+  if (!inv) return false
+  try {
+    const result = await inv('task_remove_pending_remote', { taskId })
+    return result?.success || false
+  } catch (e) {
+    return false
+  }
+}
+
+/** 发送远程任务结果 */
+export async function taskResultSend(
+  toAgent: string,
+  toUser: string,
+  taskId: string,
+  status: string,
+  data: any,
+  screenshots: string[],
+  executionTier: string,
+  durationMs: number,
+  errorMessage: string,
+): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  try {
+    return await inv('smcp_task_result_send', {
+      toAgent,
+      toUser,
+      taskId,
+      status,
+      data,
+      screenshots,
+      executionTier,
+      durationMs,
+      errorMessage,
+    })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
+/** 查询好友能力声明 */
+export async function friendCapabilities(friendAgentId: string): Promise<CapabilityInfo[]> {
+  const inv = invoke()
+  if (!inv) return []
+  try {
+    const result = await inv('smcp_friend_capabilities', { friendAgentId })
+    const data = result?.data || result
+    const caps = data?.capabilities || []
+    return caps.map((c: any) => ({
+      name: c.name || c,
+      tier: c.tier || 'unknown',
+      description: c.description || '',
+      available: true,
+    }))
+  } catch (e) {
+    console.warn('[SMCP] friendCapabilities failed:', e)
+    return []
+  }
 }

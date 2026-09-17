@@ -6,7 +6,7 @@
 //! - guest_enter: 访客模式（无服务端Agent，无语音聊天）
 //! - heartbeat: 30秒心跳保活
 
-use account_client::{AccountClient, ActivateResponse, FetchPayload, LoginResponse, TunnelConfig};
+use account_client::{AccountClient, AccountInfo, ActivateResponse, FetchPayload, LoginResponse, TunnelConfig};
 use serde::Serialize;
 use std::sync::Mutex;
 use tauri::{AppHandle, Manager, State};
@@ -149,6 +149,18 @@ pub async fn l1_login(
 
     eprintln!("[l1_login] ok account_id={} activated={}", lr.account_id, lr.activated);
     Ok(lr)
+}
+
+/// [账号信息] — 冷启动恢复时由前端调用, 拉取 account_name/silicon_id 显示
+#[tauri::command]
+pub async fn account_info(
+    ctx: State<'_, AppCtx>,
+    account_id: String,
+) -> Result<AccountInfo, String> {
+    ctx.client
+        .get_account_info(&account_id)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// [获取ChatGPT Session] — 用于语音聊天(Obscura CDP透传)

@@ -2,12 +2,20 @@ package com.xiaziteam.siliconmate
 
 import android.accessibilityservice.AccessibilityService
 import android.accessibilityservice.GestureDescription
+import android.graphics.Bitmap
 import android.graphics.Path
+import android.os.Handler
+import android.os.Looper
+import android.util.Base64
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
 import android.view.accessibility.AccessibilityNodeInfo
 import android.graphics.Rect
 import android.os.Bundle
+import java.io.ByteArrayOutputStream
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * 无障碍服务 — Agent版操控核心
@@ -114,6 +122,82 @@ class AgentAccessibilityService : AccessibilityService() {
     fun getCurrentActivity(): String {
         val rootNode = rootInActiveWindow ?: return "unknown"
         return rootNode.packageName?.toString() ?: "unknown"
+    }
+
+    /**
+     * T019: 截图 → JPEG base64 (AccessibilityService.takeScreenshot, API 30+)
+     *
+     * - 最长边压缩至 [maxEdge], JPEG 质量 [quality] — 控制 base64 体积(约100-300KB), 适配消息中继传输
+     * - @Blocking: 同步等待结果(最长10s), 禁止在主线程调用(会死锁)
+     * - 依赖用户在系统设置中开启本无障碍服务
+     */
+    fun takeScreenshotBase64(maxEdge: Int = 720, quality: Int = 70): String? {
+        if (Looper.myLooper() == Looper.getMainLooper()) {
+            Log.e(TAG, "takeScreenshotBase64 must NOT be called on main thread")
+            return null
+        }
+        val latch = CountDownLatch(1)
+        val resultRef = AtomicReference<String?>(null)
+        Handler(Looper.getMainLooper()).post {
+            try {
+                takeScreenshot(android.view.Display.DEFAULT_DISPLAY, mainExecutor,
+                    object : AccessibilityService.TakeScreenshotCallback {
+                    override fun onSuccess(screenshot: AccessibilityService.ScreenshotResult) {
+                        try {
+                            val hardware = Bitmap.wrapHardwareBuffer(screenshot.hardwareBuffer, screenshot.colorSpace)
+                            if (hardware == null) {
+                                screenshot.hardwareBuffer.close()
+                                resultRef.set(null)
+                                return
+                            }
+                            // hardware bitmap 无法直接 compress → 拷贝为软件位图
+                            val sw = hardware.copy(Bitmap.Config.ARGB_8888, false)
+                            hardware.recycle()
+                            screenshot.hardwareBuffer.close()
+                            if (sw == null) {
+                                resultRef.set(null)
+                                return
+                            }
+                            // 降采样: 最长边 ≤ maxEdge
+                            val maxDim = maxOf(sw.width, sw.height)
+                            val out: Bitmap = if (maxDim > maxEdge) {
+                                val scale = maxEdge.toFloat() / maxDim
+                                val w = (sw.width * scale).toInt().coerceAtLeast(1)
+                                val h = (sw.height * scale).toInt().coerceAtLeast(1)
+                                val scaled = Bitmap.createScaledBitmap(sw, w, h, true)
+                                if (scaled != sw) sw.recycle()
+                                scaled
+                            } else sw
+                            val bos = ByteArrayOutputStream()
+                            out.compress(Bitmap.CompressFormat.JPEG, quality, bos)
+                            out.recycle()
+                            resultRef.set(Base64.encodeToString(bos.toByteArray(), Base64.NO_WRAP))
+                        } catch (e: Exception) {
+                            Log.e(TAG, "screenshot encode error", e)
+                            resultRef.set(null)
+                        } finally {
+                            latch.countDown()
+                        }
+                    }
+
+                    override fun onFailure(errorCode: Int) {
+                        Log.e(TAG, "takeScreenshot failed, code=$errorCode")
+                        resultRef.set(null)
+                        latch.countDown()
+                    }
+                })
+            } catch (e: Exception) {
+                // SecurityException(无canTakeScreenshot能力/竞态丢失) 等 — 防崩溃+防latch死锁
+                Log.e(TAG, "takeScreenshot threw", e)
+                resultRef.set(null)
+                latch.countDown()
+            }
+        }
+        if (!latch.await(10, TimeUnit.SECONDS)) {
+            Log.e(TAG, "takeScreenshot timeout")
+            return null
+        }
+        return resultRef.get()
     }
 
     // --- 内部辅助 ---

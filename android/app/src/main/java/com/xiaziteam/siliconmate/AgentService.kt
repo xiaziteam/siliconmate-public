@@ -274,14 +274,15 @@ class AgentService : Service() {
     }
 
     private fun handleScreenshot(): String {
-        // 截图通过adb shell screencap实现（需要AgentService有shell权限）
-        // 或者通过MediaProjection API（需要用户授权）
-        // 当前先用简单方案：返回提示用adb截图
-        return rpcResult(null, mapOf(
-            "ok" to false, 
-            "error" to "use adb screencap for now",
-            "hint" to "adb shell screencap -p /sdcard/screen.png"
-        ))
+        // T019: AccessibilityService.takeScreenshot (API 30+) 真实现
+        val a11y = AgentAccessibilityService.instance
+            ?: return rpcResult(null, mapOf("ok" to false, "error" to "accessibility service not connected"))
+        val b64 = a11y.takeScreenshotBase64()
+        return if (b64 != null) {
+            rpcResult(null, mapOf("ok" to true, "screenshot" to b64))
+        } else {
+            rpcResult(null, mapOf("ok" to false, "error" to "takeScreenshot failed (need accessibility on + API 30+)"))
+        }
     }
 
     private fun handleStartApp(params: JSONObject?): String {

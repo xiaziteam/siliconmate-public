@@ -1,13 +1,12 @@
 import React, { useState } from 'react'
 
 interface LoginProps {
-  onLoginSuccess: (sessionId: string, chatgptSession?: { access_token: string; cookies: any; expires: string }, activated?: boolean, plan?: string, siliconId?: string) => void
-  onGuestEnter: () => void
+  onLoginSuccess: (sessionId: string, chatgptSession?: { access_token: string; cookies: any; expires: string }, activated?: boolean, plan?: string, siliconId?: string, accountName?: string) => void
 }
 
 type Tab = 'login' | 'register'
 
-export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) => {
+export const Login: React.FC<LoginProps> = ({ onLoginSuccess }) => {
   const [tab, setTab] = useState<Tab>('login')
   const [accountName, setAccountName] = useState('')
   const [password, setPassword] = useState('')
@@ -51,14 +50,14 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
         try {
           const payload = await invoke('apply_session')
           console.log('[login] session payload OK')
-          onLoginSuccess(payload.session_id, payload.chatgpt_session, true, resp.plan, resp.silicon_id)
+          onLoginSuccess(payload.session_id, payload.chatgpt_session, true, resp.plan, resp.silicon_id, resp.account_name)
         } catch (se) {
           console.warn('[login] apply_session failed:', se)
-          onLoginSuccess(resp.account_id, undefined, true, resp.plan, resp.silicon_id)
+          onLoginSuccess(resp.account_id, undefined, true, resp.plan, resp.silicon_id, resp.account_name)
         }
       } else {
         console.log('[login] not activated, entering free mode')
-        onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id)
+        onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id, resp.account_name)
       }
 
       try { await invoke('finish_enter') } catch {}
@@ -98,26 +97,15 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
         accountName: accountName.trim(),
         password,
       })
-      say('注册成功！免费模式进入', 'ok')
+      say('注册成功，请激活后使用全部功能', 'ok')
 
-      onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id)
+      onLoginSuccess(resp.account_id, undefined, false, undefined, resp.silicon_id, accountName.trim())
       try { await invoke('finish_enter') } catch {}
     } catch (e: any) {
       console.error('[register] FAILED:', e)
       say(String(e), 'err')
     } finally {
       setLoading(false)
-    }
-  }
-
-  const handleGuest = async () => {
-    if (!invoke) { onGuestEnter(); return }
-    try {
-      await invoke('guest_enter')
-      try { await invoke('finish_enter') } catch {}
-      onGuestEnter()
-    } catch (e: any) {
-      say(String(e), 'err')
     }
   }
 
@@ -159,17 +147,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
     opacity: loading ? 0.6 : 1,
   }
 
-  const btnGuest = {
-    width: '100%',
-    background: 'transparent',
-    color: '#7a8aa0',
-    border: '1px solid #333',
-    borderRadius: '10px',
-    padding: '10px',
-    fontSize: '14px',
-    cursor: 'pointer',
-  }
-
   return (
     <div style={{
       display: 'flex',
@@ -177,6 +154,8 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
       alignItems: 'center',
       justifyContent: 'center',
       height: '100vh',
+      padding: '16px',
+      overflowY: 'auto',
       background: '#0f1115',
       color: '#e6e6e6',
       fontFamily: '-apple-system, "PingFang SC", "Microsoft YaHei", sans-serif',
@@ -184,15 +163,19 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
       <div style={{
         background: '#1a1d25',
         borderRadius: '16px',
-        padding: '40px',
+        padding: '40px 24px',
         width: '360px',
+        maxWidth: '100%',
         boxShadow: '0 4px 24px rgba(0,0,0,0.4)',
       }}>
         <h1 style={{ fontSize: '28px', fontWeight: 600, marginBottom: '8px', textAlign: 'center' }}>
           硅侣
         </h1>
-        <p style={{ fontSize: '14px', color: '#7a8aa0', marginBottom: '24px', textAlign: 'center' }}>
+        <p style={{ fontSize: '14px', color: '#7a8aa0', marginBottom: '4px', textAlign: 'center' }}>
           SiliconMate · 硅基生命数字人伴侣
+        </p>
+        <p title={`构建 ${__BUILD_TIME__}`} style={{ fontSize: '11px', color: '#4a5568', marginBottom: '24px', textAlign: 'center' }}>
+          v{__APP_VERSION__}
         </p>
 
         {/* Tab switch */}
@@ -235,10 +218,6 @@ export const Login: React.FC<LoginProps> = ({ onLoginSuccess, onGuestEnter }) =>
           style={btnPrimary}
         >
           {loading ? (tab === 'login' ? '登录中...' : '注册中...') : (tab === 'login' ? '登录' : '注册')}
-        </button>
-
-        <button onClick={handleGuest} style={btnGuest}>
-          访客模式（日常对话可用，深度思考和语音聊天不可用）
         </button>
 
         {message && (

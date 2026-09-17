@@ -9,6 +9,8 @@ pub enum RouteTarget {
     ObscuraBridge,
     FeishuOutput { agent: String },
     ShrimpAgent { agent_id: String, task: String },
+    /// Task路由：Agent能力执行
+    TaskRoute { capability: String },
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -75,6 +77,11 @@ pub fn route_message(
 
     if let Some((agent_id, task)) = detect_shrimp_dispatch(&message) {
         return Ok(RouteTarget::ShrimpAgent { agent_id, task });
+    }
+
+    // Task意图识别：关键词匹配路由到TaskRoute
+    if let Some(capability) = detect_task_intent(&message) {
+        return Ok(RouteTarget::TaskRoute { capability });
     }
 
     if has_office {
@@ -199,6 +206,78 @@ pub fn detect_shrimp_dispatch(message: &str) -> Option<(String, String)> {
     None
 }
 
+/// Task意图识别：关键词优先匹配
+/// 截屏→screenshot, 打开X→app.open, 读文件→file.read, 执行→shell.exec,
+/// 识别文字→ocr, 发飞书→feishu.send, 剪贴板→clipboard.*
+pub fn detect_task_intent(message: &str) -> Option<String> {
+    let lower = message.to_lowercase();
+
+    // 截屏/截图
+    if lower.contains("截屏") || lower.contains("截图") || lower.contains("screenshot") {
+        return Some("screenshot".into());
+    }
+
+    // 打开APP: "打开微信" → app.open, params: {app_name: "微信"}
+    if lower.contains("打开") {
+        // 提取APP名
+        if let Some(app_name) = extract_app_name(&lower) {
+            return Some("app.open".into());
+        }
+        // 即使没提取到具体APP名，也路由到app.open
+        return Some("app.open".into());
+    }
+
+    // 读文件
+    if lower.contains("读文件") || lower.contains("读取文件") || lower.contains("读取") && lower.contains("文件") {
+        return Some("file.read".into());
+    }
+
+    // 执行命令
+    if lower.contains("执行") || lower.contains("运行") || lower.contains("跑一下") || lower.contains("shell") {
+        return Some("shell.exec".into());
+    }
+
+    // OCR识别文字
+    if lower.contains("识别文字") || lower.contains("识别图片") || lower.contains("文字识别") || lower.contains("ocr") {
+        return Some("ocr".into());
+    }
+
+    // 飞书发送
+    if lower.contains("发到飞书") || lower.contains("发飞书") || lower.contains("发送飞书") || lower.contains("飞书消息") {
+        return Some("feishu.send".into());
+    }
+
+    // 剪贴板
+    if lower.contains("剪贴板") || lower.contains("粘贴板") || lower.contains("clipboard") {
+        if lower.contains("读") || lower.contains("获取") || lower.contains("read") {
+            return Some("clipboard.read".into());
+        }
+        return Some("clipboard.write".into());
+    }
+
+    // Computer Use (复杂操控)
+    if lower.contains("电脑操作") || lower.contains("computer use") || lower.contains("操控") {
+        return Some("computer.use".into());
+    }
+
+    None
+}
+
+/// 从"打开X"消息中提取APP名
+fn extract_app_name(message: &str) -> Option<String> {
+    let patterns = ["打开", "开启", "启动", "open"];
+    for pattern in patterns {
+        if let Some(idx) = message.find(pattern) {
+            let after = &message[idx + pattern.len()..];
+            let app_name = after.split_whitespace().next().unwrap_or("").trim();
+            if !app_name.is_empty() {
+                return Some(app_name.to_string());
+            }
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -268,5 +347,36 @@ mod tests {
         assert!(detect_shrimp_dispatch("让白龙马看看").is_some());
         assert!(detect_shrimp_dispatch("叫波迪处理").is_some());
         assert!(detect_shrimp_dispatch("你好").is_none());
+    }
+
+    #[test]
+    fn test_route_task_screenshot() {
+        let result = route_message("截屏给我看".into(), vec![], None, None).unwrap();
+        assert!(matches!(result, RouteTarget::TaskRoute { capability } if capability == "screenshot"));
+    }
+
+    #[test]
+    fn test_route_task_open_app() {
+        let result = route_message("打开Finder".into(), vec![], None, None).unwrap();
+        assert!(matches!(result, RouteTarget::TaskRoute { capability } if capability == "app.open"));
+    }
+
+    #[test]
+    fn test_detect_task_intent() {
+        assert_eq!(detect_task_intent("截屏"), Some("screenshot".into()));
+        assert_eq!(detect_task_intent("截图给我看"), Some("screenshot".into()));
+        assert_eq!(detect_task_intent("打开微信"), Some("app.open".into()));
+        assert_eq!(detect_task_intent("读文件"), Some("file.read".into()));
+        assert_eq!(detect_task_intent("执行ls"), Some("shell.exec".into()));
+        assert_eq!(detect_task_intent("识别文字"), Some("ocr".into()));
+        assert_eq!(detect_task_intent("发到飞书"), Some("feishu.send".into()));
+        assert_eq!(detect_task_intent("你好"), None);
+    }
+
+    #[test]
+    fn test_extract_app_name() {
+        assert_eq!(extract_app_name("打开微信"), Some("微信".into()));
+        assert_eq!(extract_app_name("打开Finder"), Some("Finder".into()));
+        assert_eq!(extract_app_name("你好"), None);
     }
 }

@@ -1,8 +1,16 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import { version } from './package.json'
+
+const pkgVersion: string = version
+const buildTime: string = new Date().toISOString().slice(0, 16).replace('T', ' ')
 
 export default defineConfig({
   plugins: [react()],
+  define: {
+    __APP_VERSION__: JSON.stringify(pkgVersion),
+    __BUILD_TIME__: JSON.stringify(buildTime),
+  },
   base: './',
   clearScreen: false,
   server: {

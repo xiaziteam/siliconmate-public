@@ -29,8 +29,8 @@ chrono = { version = "0.4", features = ["serde"] }
 # Nuphus DesktopClient integration (Agent capability engine)
 # desktop-api provides DesktopApi/SessionManager for Computer Use
 # On macOS, native_cmds provide primary capability; nuphus adds deep Computer Use when available
-nuphus = { path = "/Users/apple/nuphus/src" }
-desktop-api = { path = "/Users/apple/nuphus/src-tauri/crates/desktop-api" }
+nuphus = { path = "crates/nuphus" }
+desktop-api = { path = "crates/desktop-api" }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 cpal = "0.15"

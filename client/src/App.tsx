@@ -1559,6 +1559,7 @@ export const App: React.FC = () => {
           accountId={sessionId}
           mySiliconId={mySiliconId}
           accountName={accountName}
+          onAccountNameChange={setAccountName}
           pendingFriendCount={friendReqCount}
           onPendingFriendCountChange={setFriendReqCount}
           openFriendsSignal={friendsOpenSignal}
@@ -1595,6 +1596,7 @@ export const App: React.FC = () => {
               accountId={sessionId}
               mySiliconId={mySiliconId}
               accountName={accountName}
+              onAccountNameChange={setAccountName}
               pendingFriendCount={friendReqCount}
               onPendingFriendCountChange={setFriendReqCount}
               openFriendsSignal={friendsOpenSignal}

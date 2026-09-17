@@ -142,6 +142,29 @@ pub async fn account_change_password(
     Ok(resp)
 }
 
+/// 修改用户名 — 旧密码验证, 硅侣号不变仅改昵称
+#[tauri::command]
+pub async fn account_change_username(
+    state: State<'_, SessionState>,
+    ctx: State<'_, AppCtx>,
+    old_password: String,
+    new_username: String,
+) -> Result<serde_json::Value, String> {
+    let creds = state.0.lock().unwrap().clone();
+    let creds = creds.ok_or("未登录，请先注册或登录账号")?;
+    eprintln!("[account_change_username] account_id={}", creds.account_id);
+    let resp = ctx
+        .client
+        .change_username(&creds.account_id, &old_password, &new_username)
+        .await
+        .map_err(|e| {
+            eprintln!("[account_change_username] FAILED: {}", e);
+            e.to_string()
+        })?;
+    eprintln!("[account_change_username] OK new_name={}", new_username);
+    Ok(resp)
+}
+
 /// [L1登录] — 账号密码登录获取auth-token
 #[tauri::command]
 pub async fn l1_login(

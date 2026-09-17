@@ -205,6 +205,15 @@ impl AccountClient {
         })).await
     }
 
+    /// 修改用户名 (旧密码验证; 硅侣号不变, 仅改昵称)
+    pub async fn change_username(&self, account_id: &str, old_password: &str, new_username: &str)
+        -> Result<serde_json::Value, AccountError>
+    {
+        self.post_json("/v1/auth/change_username", &serde_json::json!({
+            "account_id": account_id, "old_password": old_password, "new_username": new_username,
+        })).await
+    }
+
     /// HMAC签名头 (A1§三): sig=HMAC(api_key, "POST|path|account_id|ts|sha256(raw_body)")
     pub fn sign_headers(api_key: &str, path: &str, account_id: &str, raw_body: &[u8])
         -> [(&'static str, String); 4]

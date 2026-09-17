@@ -102,6 +102,7 @@ fn main() {
             account::account_info,
             account::account_activate,
             account::account_change_password,
+            account::account_change_username,
             account::apply_session,
             account::heartbeat,
             account::guest_enter,

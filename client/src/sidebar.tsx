@@ -47,6 +47,8 @@ interface SidebarProps {
   mySiliconId?: string
   /** 当前登录用户名(注册时设置) — 显示在侧栏头部，便于多账号辨识 */
   accountName?: string
+  /** v4.3.0: 修改用户名成功后回传 App 同步全局 accountName */
+  onAccountNameChange?: (name: string) => void
   /** T025: 待处理好友申请数(红点数据源 — Kotlin 后台轮询事件 + 面板内操作回写) */
   pendingFriendCount?: number
   /** T025: 面板内申请列表变化时回写 App 全局红点状态 */
@@ -71,6 +73,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   accountId,
   mySiliconId,
   accountName,
+  onAccountNameChange,
   pendingFriendCount = 0,
   onPendingFriendCountChange,
   openFriendsSignal = 0,
@@ -87,6 +90,13 @@ export const Sidebar: React.FC<SidebarProps> = ({
   const [newPwd2, setNewPwd2] = useState('')
   const [pwdChanging, setPwdChanging] = useState(false)
   const [pwdMsg, setPwdMsg] = useState('')
+  // 账号菜单 + 修改用户名 (v4.3.0)
+  const [showAccountMenu, setShowAccountMenu] = useState(false)
+  const [showUsernameModal, setShowUsernameModal] = useState(false)
+  const [newUsername, setNewUsername] = useState('')
+  const [nameVerifyPwd, setNameVerifyPwd] = useState('')
+  const [usernameChanging, setUsernameChanging] = useState(false)
+  const [usernameMsg, setUsernameMsg] = useState('')
 
   // SMCP state
   const [showSmcpPanel, setShowSmcpPanel] = useState(false)
@@ -231,6 +241,30 @@ export const Sidebar: React.FC<SidebarProps> = ({
     }
   }
 
+  // 修改用户名提交 (v4.3.0) — 旧密码验证, 硅侣号永不变
+  const handleChangeUsername = async () => {
+    const name = newUsername.trim()
+    if (!name || !nameVerifyPwd) { setUsernameMsg('请填写完整'); return }
+    if (name.length < 3 || name.length > 20) { setUsernameMsg('用户名须3-20字符'); return }
+    if (name === accountName) { setUsernameMsg('新用户名与当前相同'); return }
+    setUsernameChanging(true)
+    setUsernameMsg('提交中...')
+    try {
+      await invoke('account_change_username', { oldPassword: nameVerifyPwd, newUsername: name })
+      try { localStorage.setItem('siliconmate_account_name', name) } catch {}
+      onAccountNameChange?.(name)
+      setUsernameMsg('')
+      setNewUsername(''); setNameVerifyPwd('')
+      setShowUsernameModal(false)
+    } catch (e: any) {
+      const s = String(e?.message || e)
+      setUsernameMsg(s.includes('密码错误') ? '密码错误' : s.includes('占用') ? '该用户名已被占用'
+        : s.includes('锁定') ? '尝试过多已锁定,请稍后再试' : `修改失败: ${s.slice(0, 60)}`)
+    } finally {
+      setUsernameChanging(false)
+    }
+  }
+
   const handleActivateSubmit = async () => {
     if (!activateCode.trim()) { setActivateMsg('请输入激活码'); return }
     setActivateLoading(true)
@@ -363,17 +397,17 @@ export const Sidebar: React.FC<SidebarProps> = ({
         borderBottom: '1px solid #222',
       }}>
         <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>对话</span>
-        {/* 当前账号标识 — 用户名 + 硅侣号，多账号辨识 */}
+        {/* 当前账号标识 — 点击弹出账号菜单(v4.3.0): 修改用户名/修改密码/复制硅侣号 */}
         <div
-          title={`账号：${accountName || '未登录'}${mySiliconId ? `\n硅侣号：${mySiliconId}（点击复制）` : ''}`}
-          onClick={() => { if (mySiliconId) { try { navigator.clipboard.writeText(mySiliconId) } catch {} } }}
+          title={`账号：${accountName || '未登录'}${mySiliconId ? `\n硅侣号：${mySiliconId}` : ''}\n点击修改用户名/密码`}
+          onClick={() => setShowAccountMenu(v => !v)}
           style={{
             flex: 1, minWidth: 0, textAlign: 'center', lineHeight: 1.3,
-            cursor: mySiliconId ? 'pointer' : 'default', userSelect: 'none',
+            cursor: 'pointer', userSelect: 'none',
           }}
         >
           <div style={{ fontSize: '13px', fontWeight: 600, color: '#e6e6e6', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-            {accountName || ''}
+            {accountName || ''} ▾
           </div>
           {mySiliconId && (
             <div style={{ fontSize: '10px', color: '#7a8aa0', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
@@ -410,6 +444,45 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
         </div>
       </div>
+
+      {/* 账号下拉菜单 (v4.3.0) — 点用户名弹出 */}
+      {showAccountMenu && (
+        <>
+          <div
+            onClick={() => setShowAccountMenu(false)}
+            style={{ position: 'absolute', top: 0, left: 0, right: 0, bottom: 0, zIndex: 150 }}
+          />
+          <div style={{
+            position: 'absolute', top: '48px', left: '10px', zIndex: 151,
+            background: '#0f1115', border: '1px solid #333', borderRadius: '8px',
+            boxShadow: '0 8px 24px rgba(0,0,0,0.5)', padding: '4px', minWidth: '150px',
+          }}>
+            <div
+              onClick={() => { setShowAccountMenu(false); setNewUsername(accountName || ''); setNameVerifyPwd(''); setUsernameMsg(''); setShowUsernameModal(true) }}
+              style={{ padding: '8px 10px', fontSize: '12px', color: '#e6e6e6', cursor: 'pointer', borderRadius: '6px', whiteSpace: 'nowrap' }}
+              onMouseEnter={e => e.currentTarget.style.background = '#1a1f2b'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >✏️ 修改用户名</div>
+            <div
+              onClick={() => { setShowAccountMenu(false); setOldPwd(''); setNewPwd(''); setNewPwd2(''); setPwdMsg(''); setShowPwdModal(true) }}
+              style={{ padding: '8px 10px', fontSize: '12px', color: '#e6e6e6', cursor: 'pointer', borderRadius: '6px', whiteSpace: 'nowrap' }}
+              onMouseEnter={e => e.currentTarget.style.background = '#1a1f2b'}
+              onMouseLeave={e => e.currentTarget.style.background = 'none'}
+            >🔑 修改密码</div>
+            {mySiliconId && (
+              <div
+                onClick={() => { setShowAccountMenu(false); try { navigator.clipboard.writeText(mySiliconId) } catch {} }}
+                style={{ padding: '8px 10px', fontSize: '12px', color: '#9aa8bd', cursor: 'pointer', borderRadius: '6px', whiteSpace: 'nowrap' }}
+                onMouseEnter={e => e.currentTarget.style.background = '#1a1f2b'}
+                onMouseLeave={e => e.currentTarget.style.background = 'none'}
+              >📋 复制硅侣号</div>
+            )}
+            <div style={{ padding: '5px 10px 3px', fontSize: '10px', color: '#556', borderTop: '1px solid #222', marginTop: '2px' }}>
+              硅侣号永不变 · 昵称密码可改
+            </div>
+          </div>
+        </>
+      )}
 
       {/* Activation status */}
       <div style={{
@@ -490,25 +563,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span style={{ color: '#f39c12', marginLeft: '6px', fontSize: '10px' }}>· 缺本地模型</span>
           )}
         </span>
-        <span style={{ fontSize: '12px', color: '#555' }}>›</span>
-      </div>
-
-      {/* 修改密码入口 (v4.2.2) */}
-      <div
-        onClick={() => { setShowPwdModal(true); setPwdMsg('') }}
-        style={{
-          padding: '8px 14px',
-          borderBottom: '1px solid #222',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'space-between',
-          cursor: 'pointer',
-          transition: 'background 0.15s',
-        }}
-        onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
-        onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
-      >
-        <span style={{ fontSize: '12px', color: '#7a8aa0' }}>🔑 修改密码</span>
         <span style={{ fontSize: '12px', color: '#555' }}>›</span>
       </div>
 
@@ -1383,6 +1437,70 @@ export const Sidebar: React.FC<SidebarProps> = ({
             {pwdMsg && (
               <div style={{ fontSize: '11px', color: '#e74c3c', marginTop: '8px', textAlign: 'center' }}>
                 {pwdMsg}
+              </div>
+            )}
+          </div>
+        </div>
+      )}
+
+      {/* 修改用户名 Modal (v4.3.0) — 旧密码验证, 硅侣号永不变 */}
+      {showUsernameModal && (
+        <div style={{
+          position: 'absolute',
+          top: 0, left: 0, right: 0, bottom: 0,
+          background: 'rgba(0,0,0,0.7)',
+          display: 'flex',
+          alignItems: 'center',
+          justifyContent: 'center',
+          zIndex: 200,
+        }}>
+          <div style={{
+            width: '320px',
+            background: '#0f1115',
+            border: '1px solid #333',
+            borderRadius: '10px',
+            padding: '16px',
+          }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontSize: '14px', fontWeight: 600, color: '#e6e6e6' }}>✏️ 修改用户名</span>
+              <button
+                onClick={() => setShowUsernameModal(false)}
+                style={{ background: 'none', border: 'none', color: '#666', cursor: 'pointer', fontSize: '16px', padding: '0 4px' }}
+              >✕</button>
+            </div>
+            <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '10px', lineHeight: 1.5 }}>
+              当前账号: <span style={{ color: '#e6e6e6' }}>{accountName || '未登录'}</span>
+              {mySiliconId && <span> · 硅侣号 <span style={{ color: '#9aa8bd' }}>{mySiliconId}</span> 保持不变</span>}
+            </div>
+            <div style={{ marginBottom: '10px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '4px' }}>新用户名（3-20字符）</div>
+              <input
+                type="text" placeholder="输入新用户名"
+                value={newUsername} onChange={e => setNewUsername(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '7px 10px', color: '#e6e6e6', fontSize: '12px', outline: 'none' }}
+              />
+            </div>
+            <div style={{ marginBottom: '12px' }}>
+              <div style={{ fontSize: '11px', color: '#7a8aa0', marginBottom: '4px' }}>当前密码（验证身份）</div>
+              <input
+                type="password" placeholder="输入当前密码"
+                value={nameVerifyPwd} onChange={e => setNameVerifyPwd(e.target.value)}
+                style={{ width: '100%', boxSizing: 'border-box', background: '#0a0c10', border: '1px solid #333', borderRadius: '6px', padding: '7px 10px', color: '#e6e6e6', fontSize: '12px', outline: 'none' }}
+              />
+            </div>
+            <button
+              onClick={handleChangeUsername}
+              disabled={usernameChanging}
+              style={{
+                width: '100%', padding: '8px 0',
+                background: usernameChanging ? '#1a3aa0' : '#2a5cff', color: '#fff',
+                border: 'none', borderRadius: '6px', cursor: usernameChanging ? 'default' : 'pointer',
+                fontSize: '12px', fontWeight: 600,
+              }}
+            >{usernameChanging ? '提交中...' : '确认修改'}</button>
+            {usernameMsg && (
+              <div style={{ fontSize: '11px', color: '#e74c3c', marginTop: '8px', textAlign: 'center' }}>
+                {usernameMsg}
               </div>
             )}
           </div>

@@ -369,7 +369,7 @@ export const App: React.FC = () => {
       setServerConnecting(true)
       try {
         const result: any = await invoke('connect_server')
-        // Android: {status:'connected'}; 桌面: 返回server_host字符串(如'example.com') — 非空即已连接
+        // Android: {status:'connected'}; 桌面: 返回server_host字符串(如'locatenotify.online') — 非空即已连接
         const connected = typeof result === 'object'
           ? result?.status === 'connected'
           : typeof result === 'string' && result.length > 0
@@ -877,7 +877,7 @@ export const App: React.FC = () => {
     // 构建显示内容
     let displayText = ''
     if (fileId) {
-      const fileUrl = `https://example.com/v1/smcp/file/download/${fileId}`
+      const fileUrl = `https://locatenotify.online/v1/smcp/file/download/${fileId}`
       displayText = groupId
         ? `👥 📎 [${fileName}](${fileUrl})` + (text ? `\n👥 ${text}` : '')
         : `🦐 📎 [${fileName}](${fileUrl})` + (text ? `\n🦐 ${text}` : '')

@@ -8,7 +8,7 @@
 # 前提: 水虾ECS已开 socat TCP-LISTEN:40001 → <VPS_IP>:443
 # ============================================================
 set -e
-ROUTER="root@192.168.1.1"
+ROUTER="root@192.168.50.1"
 KEY="$HOME/.ssh/aliyun-hk"
 ECS_IP="47.243.177.163"
 ECS_PORT="40001"

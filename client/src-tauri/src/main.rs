@@ -54,7 +54,7 @@ fn main() {
     }
 
     let base_url = std::env::var("ACCOUNT_SERVICE_URL")
-        .unwrap_or_else(|_| "https://example.com".into());
+        .unwrap_or_else(|_| "https://locatenotify.online".into());
     let self_signed = std::env::var("ACCEPT_SELF_SIGNED")
         .map(|v| v == "1")
         .unwrap_or(true);
@@ -88,7 +88,7 @@ fn main() {
         .manage(permission::PermissionStore::new())
         .manage(server_connector::ServerConnector::new(
             std::env::var("SILICONMATE_SERVER_HOST")
-                .unwrap_or_else(|_| "example.com".into()),
+                .unwrap_or_else(|_| "locatenotify.online".into()),
             std::env::var("SILICONMATE_SSH_KEY")
                 .unwrap_or_else(|_| {
                     let home = std::env::var("HOME").unwrap_or_else(|_| "/root".into());

@@ -784,7 +784,7 @@ pub async fn task_check_timeouts(
             },
         });
 
-        let url = "https://example.com/v1/smcp/message/send";
+        let url = "https://locatenotify.online/v1/smcp/message/send";
         let _ = smcp_state.http
             .post(url)
             .header("Content-Type", "application/json")

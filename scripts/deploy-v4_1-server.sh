@@ -37,7 +37,7 @@ MACHINE_ID_FILE="/var/lib/siliconmate/machine-id"
 SERVICE_NAME="siliconmate-opencode"
 REMOTE_APP_DIR="/root/account-service"
 CONTAINER_NAME="account-service"
-CHAT_BASE="https://example.com"
+CHAT_BASE="https://locatenotify.online"
 # T031 脱敏: X-Account-Id 即服务端身份凭证, 测试账号 ID 不入仓
 SMOKE_ACCOUNT_ID="${SMOKE_ACCOUNT_ID:-}"
 

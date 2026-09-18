@@ -59,7 +59,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           case 'apply_session': return { session_id: accountStore.accountId }
           case 'account_info': {
             // v4.2.1: 冷启动恢复拉取账号信息(用户名/硅侣号) — 直连account-service公网端点
-            const resp = await fetch('https://example.com/v1/account/info', {
+            const resp = await fetch('https://locatenotify.online/v1/account/info', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({ account_id: args.accountId || accountStore.accountId }),
@@ -70,7 +70,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'account_change_password': {
             // v4.2.2: 修改密码(旧密码验证式)
-            const resp = await fetch('https://example.com/v1/auth/change_password', {
+            const resp = await fetch('https://locatenotify.online/v1/auth/change_password', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -85,7 +85,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'account_change_username': {
             // v4.3.0: 修改用户名(旧密码验证, 硅侣号不变)
-            const resp = await fetch('https://example.com/v1/auth/change_username', {
+            const resp = await fetch('https://locatenotify.online/v1/auth/change_username', {
               method: 'POST',
               headers: { 'Content-Type': 'application/json' },
               body: JSON.stringify({
@@ -142,7 +142,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             try {
               const ctrl = new AbortController()
               const timer = setTimeout(() => ctrl.abort(), 8000)
-              const resp = await fetch('https://example.com/v1/smcp/ping', { signal: ctrl.signal })
+              const resp = await fetch('https://locatenotify.online/v1/smcp/ping', { signal: ctrl.signal })
               clearTimeout(timer)
               if (!resp.ok) throw new Error(`HTTP ${resp.status}`)
               const json = await resp.json()
@@ -169,7 +169,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             const ctrl = new AbortController()
             const timer = setTimeout(() => ctrl.abort(), 95000)
             try {
-              const resp = await fetch('https://example.com/v1/chat', {
+              const resp = await fetch('https://locatenotify.online/v1/chat', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ message: fullMessage }),
@@ -197,7 +197,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             const ctrl = new AbortController()
             const timer = setTimeout(() => ctrl.abort(), 10000)
             try {
-              const resp = await fetch('https://example.com/v1/chat/history', {
+              const resp = await fetch('https://locatenotify.online/v1/chat/history', {
                 headers: { 'X-Account-Id': accountStore.accountId },
                 signal: ctrl.signal,
               })
@@ -239,7 +239,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           // SMCP
           case 'smcp_register': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/agent/register', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/agent/register', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ user_id: args.userId, agent_id: args.agentId, role: args.role, device: args.device, capabilities: args.capabilities || ['im', 'tunnel', 'notify'] }),
@@ -252,7 +252,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_agent_list': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/agent/list', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/agent/list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ user_id: accountStore.accountId }),
@@ -269,7 +269,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_message_poll': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/message/poll', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/message/poll', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ agent_id: args.agentId, limit: args.limit || 50 }),
@@ -319,7 +319,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_ping': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/ping', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/ping', {
                 method: 'GET',
                 headers: { 'X-Account-Id': accountStore.accountId },
               })
@@ -335,7 +335,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_message_unread': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/message/unread', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/message/unread', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({}),
@@ -348,7 +348,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_message_read': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/message/read', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/message/read', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ msg_ids: args.msgIds || [] }),
@@ -369,7 +369,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
             }
             // Fallback to fetch for macOS
             try {
-              const resp = await fetch('https://example.com/v1/smcp/group/create', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/group/create', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ name: args.name, member_ids: args.memberIds || [] }),
@@ -386,7 +386,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { groups: [] } }
             }
             try {
-              const resp = await fetch('https://example.com/v1/smcp/group/list', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/group/list', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({}),
@@ -403,7 +403,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://example.com/v1/smcp/group/info', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/group/info', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ group_id: args.groupId }),
@@ -414,7 +414,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
           }
           case 'smcp_group_invite': {
             try {
-              const resp = await fetch('https://example.com/v1/smcp/group/invite', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/group/invite', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ group_id: args.groupId, user_id: args.userId }),
@@ -431,7 +431,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://example.com/v1/smcp/group/leave', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/group/leave', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({ group_id: args.groupId }),
@@ -448,7 +448,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://example.com/v1/smcp/group/message/send', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/group/message/send', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({
@@ -471,7 +471,7 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
               } catch (e) { return { ok: false, error: String(e) } }
             }
             try {
-              const resp = await fetch('https://example.com/v1/smcp/file/upload', {
+              const resp = await fetch('https://locatenotify.online/v1/smcp/file/upload', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json', 'X-Account-Id': accountStore.accountId },
                 body: JSON.stringify({

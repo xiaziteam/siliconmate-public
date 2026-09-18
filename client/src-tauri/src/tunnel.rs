@@ -85,7 +85,19 @@ pub fn start_tunnel(
     manager: tauri::State<'_, TunnelManager>,
     config: TunnelConfig,
 ) -> Result<String, String> {
+    // 先取名单（config 稍后 move 进探测函数）
+    #[cfg(target_os = "macos")]
+    let route_domains = config.route_domains.clone().unwrap_or_default();
+
     let port = start_tunnel_internal(&manager, config)?;
+
+    // daemon 就绪后再刷新 PAC 内容（客户机无 daemon 会在上面提前 Err，不白写文件）
+    #[cfg(target_os = "macos")]
+    {
+        if let Err(e) = write_pac_file(&route_domains) {
+            eprintln!("[tunnel] PAC refresh failed (keep existing): {}", e);
+        }
+    }
 
     // 设系统PAC代理(指向daemon的HTTP PAC serve)
     set_system_proxy_for_chatgpt(true, port);
@@ -418,6 +430,173 @@ pub fn cleanup_leftover_proxy() {
         }
         // 注意：这里绝不清理 127.0.0.1:18085/proxy.pac — 它是 pac-server 的全局 PAC
     }
+}
+
+// ============================================================================
+// PAC 生成 — 「锦上添花」策略 v3（2026-09-19 v4.4.3）
+//
+// 产品铁律（麦克 2026-09-19）：绝不破坏任何网络环境。
+// 默认直连，只有明确需要梯子的域名才走代理；兜底 = DIRECT。
+//
+// 名单来源三端统一：服务端 tunnel_configs.route_domains 下发（Android 同源）。
+// 内置底座 + 服务端增量合并去重；国内直连清单/中国IP段内置于模板。
+// 写入 ~/Users/apple/.pac/proxy.pac（虾群 pac-server :18085 静态服务）。
+// 原子写：生成失败绝不覆盖现有 PAC。
+// ============================================================================
+
+/// 内置被墙域名底座（服务端名单增量合并，去重）
+#[cfg(target_os = "macos")]
+const PAC_GFW_BASE: &[&str] = &[
+    // Google 系
+    "google.com", "googleapis.com", "gstatic.com", "googlevideo.com",
+    "ggpht.com", "googleusercontent.com", "google.com.hk", "googlemail.com",
+    "youtube.com", "ytimg.com", "youtu.be",
+    // AI 系
+    "openai.com", "chatgpt.com", "chat.com", "oaistatic.com", "oaiusercontent.com",
+    "anthropic.com", "claude.ai", "perplexity.ai",
+    // 社交系
+    "twitter.com", "x.com", "twimg.com", "t.co",
+    "facebook.com", "fbcdn.net", "fbsbx.com", "messenger.com", "whatsapp.com", "meta.com",
+    "instagram.com", "cdninstagram.com",
+    "telegram.org", "t.me",
+    "discord.com", "discordapp.com", "discordapp.net", "discord.gg",
+    "reddit.com", "redd.it", "redditmedia.com",
+    "medium.com", "quora.com",
+    // 知识/参考系
+    "wikipedia.org", "wikimedia.org", "wiktionary.org", "wikiquote.org",
+    // 流媒体系
+    "netflix.com", "nflxvideo.net", "nflximg.net", "nflxext.com",
+    "disneyplus.com", "spotify.com", "scdn.co", "twitch.tv", "ttvnw.net",
+    // 开发者系
+    "docker.io", "gcr.io", "huggingface.co", "v2ex.com", "steamcommunity.com",
+    "github.com", "githubusercontent.com", "githubassets.com",
+    // 其他
+    "pixiv.net", "pximg.net", "line.me", "naver.com", "blogspot.com",
+    "blogger.com", "appspot.com", "workers.dev", "notion.so", "notion.site",
+];
+
+/// 内置国内直连清单（跳过 DNS，快速直连）
+#[cfg(target_os = "macos")]
+const PAC_CN_DOMAINS: &[&str] = &[
+    "taobao.com", "tmall.com", "alipay.com", "alibaba.com", "alicdn.com",
+    "aliyun.com", "goofish.com", "tb.cn", "1688.com",
+    "jd.com", "360buyimg.com", "jkcsjd.com",
+    "qq.com", "wechat.com", "qpic.cn", "qlogo.cn", "gtimg.cn",
+    "baidu.com", "bdstatic.com", "bdimg.com", "bcebos.com",
+    "bilibili.com", "hdslb.com", "acgvideo.com",
+    "zhihu.com", "zhimg.com",
+    "douyin.com", "douyinpic.com", "douyincdn.com", "douyinstatic.com",
+    "kuaishou.com", "ksapisrv.com", "ks-cdn.com", "yxixy.com",
+    "xiaohongshu.com", "xhscdn.com",
+    "sina.com.cn", "weibo.com", "wbimg.cn", "miaopai.com",
+    "163.com", "netease.com", "126.com", "ydstatic.com", "youdao.com",
+    "meituan.com", "dianping.com", "meituan.net", "ele.me",
+    "ctrip.com", "qunar.com", "trip.com",
+    "mi.com", "xiaomi.com", "miui.com", "vmall.com",
+    "huawei.com", "hicloud.com",
+    "huaweicloud.com", "myhuaweicloud.com", "hc-cdn.com", "hc-cdn.cn",
+    "pinduoduo.com", "yangkeduo.com", "pddpic.com",
+    "suning.com", "gome.com.cn", "vip.com",
+    "iqiyi.com", "youku.com", "mgtv.com", "letv.com",
+    "ifeng.com", "sohu.com", "sogou.com", "360.cn", "haosou.com",
+    "csdn.net", "cnblogs.com", "jianshu.com", "oschina.net", "gitee.com",
+    "coolapk.com", "sspaq.com",
+];
+
+/// 中国 IP 段（APNIC 主干 /8 近似；误判方向安全=多直连，绝不误送梯子）
+#[cfg(target_os = "macos")]
+const PAC_CN_IP_PREFIXES: &[&str] = &[
+    "1.", "14.", "27.", "36.", "39.", "42.", "47.", "58.", "59.", "60.",
+    "61.", "101.", "106.", "110.", "111.", "112.", "113.", "114.", "115.",
+    "116.", "117.", "118.", "119.", "120.", "121.", "122.", "123.", "124.",
+    "125.", "139.", "180.", "182.", "183.", "202.", "203.", "210.", "211.",
+    "218.", "219.", "220.", "221.", "222.", "223.",
+];
+
+/// 由服务端名单 + 内置底座生成 PAC（兜底 DIRECT，绝不破坏网络环境）
+#[cfg(target_os = "macos")]
+pub fn generate_pac(route_domains: &[String]) -> String {
+    // 合并去重：服务端名单优先，内置底座补漏
+    let mut gfw: Vec<String> = route_domains.to_vec();
+    for d in PAC_GFW_BASE {
+        let d = d.to_string();
+        if !gfw.contains(&d) {
+            gfw.push(d);
+        }
+    }
+    let gfw_js = gfw
+        .iter()
+        .map(|d| format!("\"{}\"", d.replace('"', "")))
+        .collect::<Vec<_>>()
+        .join(",");
+    let cn_js = PAC_CN_DOMAINS
+        .iter()
+        .map(|d| format!("\"{}\"", d))
+        .collect::<Vec<_>>()
+        .join(",");
+    let cnip_js = PAC_CN_IP_PREFIXES
+        .iter()
+        .map(|p| format!("\"{}\"", p))
+        .collect::<Vec<_>>()
+        .join(",");
+
+    format!(
+        r#"// 硅侣统一 PAC — 「锦上添花」策略 v3（硅侣 v4.4.3+ 自动生成）
+// 名单来源: 服务端 route_domains + 内置底座；兜底 = DIRECT（绝不破坏任何网络环境）
+function FindProxyForURL(url, host) {{
+  if (isPlainHostName(host)) return "DIRECT";
+  if (shExpMatch(host, "*.local") || shExpMatch(host, "*.lan") ||
+      shExpMatch(host, "*.cn") || shExpMatch(host, "*.com.cn") ||
+      shExpMatch(host, "*.net.cn") || shExpMatch(host, "*.org.cn") ||
+      shExpMatch(host, "*.gov.cn") || shExpMatch(host, "*.edu.cn")) return "DIRECT";
+  var gfw = [{gfw_js}];
+  for (var i = 0; i < gfw.length; i++) {{
+    var g = gfw[i];
+    if (host === g || shExpMatch(host, "*" + g) || host.indexOf("." + g) >= 0 || host === g) return "SOCKS5 127.0.0.1:1080; DIRECT";
+  }}
+  var cn = [{cn_js}];
+  for (var j = 0; j < cn.length; j++) {{
+    var c = cn[j];
+    if (host === c || host.endsWith("." + c)) return "DIRECT";
+  }}
+  var ip = "";
+  try {{ ip = dnsResolve(host); }} catch (e) {{ return "DIRECT"; }}
+  if (!ip) return "DIRECT";
+  var cnNets = [{cnip_js}];
+  for (var k = 0; k < cnNets.length; k++) {{
+    if (ip.indexOf(cnNets[k]) === 0) return "DIRECT";
+  }}
+  if (isInNet(ip, "10.0.0.0", "255.0.0.0") || isInNet(ip, "172.16.0.0", "255.240.0.0") ||
+      isInNet(ip, "192.168.0.0", "255.255.0.0") || isInNet(ip, "127.0.0.0", "255.0.0.0")) return "DIRECT";
+  return "DIRECT";
+}}
+"#,
+        gfw_js = gfw_js,
+        cn_js = cn_js,
+        cnip_js = cnip_js
+    )
+}
+
+/// PAC 写入路径（虾群 pac-server 静态服务目录）
+#[cfg(target_os = "macos")]
+fn pac_file_path() -> Option<std::path::PathBuf> {
+    let home = std::env::var("HOME").ok()?;
+    Some(std::path::PathBuf::from(home).join(".pac/proxy.pac"))
+}
+
+/// 原子写 PAC；生成/写盘失败绝不覆盖现有文件
+#[cfg(target_os = "macos")]
+pub fn write_pac_file(route_domains: &[String]) -> Result<(), String> {
+    let path = pac_file_path().ok_or("no HOME")?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(|e| format!("mkdir: {}", e))?;
+    }
+    let pac = generate_pac(route_domains);
+    let tmp = path.with_extension("pac.tmp");
+    std::fs::write(&tmp, pac).map_err(|e| format!("write tmp: {}", e))?;
+    std::fs::rename(&tmp, &path).map_err(|e| format!("rename: {}", e))?;
+    eprintln!("[tunnel] PAC updated: {} domains (gfw) -> {:?}", route_domains.len(), path);
+    Ok(())
 }
 
 // 保留兼容性：旧的调用入口（内部转到新逻辑）

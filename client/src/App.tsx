@@ -285,14 +285,21 @@ export const App: React.FC = () => {
     if (savedSiliconId) setMySiliconId(savedSiliconId)
     if (savedAccName) setAccountName(savedAccName)
     setView('chat')
-    // v4.2.1: 老会话升级补齐 — localStorage 无 account_name 时从服务端拉取
-    if (!savedAccName && invoke) {
+    // v4.2.1: 老会话升级补齐(无account_name时拉取) + v4.4.3: 无条件拉取 tunnel_config 刷新PAC
+    // (服务端名单变更后,冷启动即可生效,无需重装/重登录)
+    if (invoke) {
       invoke('account_info', { accountId: savedSid }).then((info: any) => {
         if (!info) return
         const an = info.account_name || ''
-        const sid = info.silicon_id || ''
-        if (an) { try { localStorage.setItem('siliconmate_account_name', an) } catch {} ; setAccountName(an) }
-        if (sid && !savedSiliconId) { try { localStorage.setItem('siliconmate_silicon_id', sid) } catch {} ; setMySiliconId(sid) }
+        const sid2 = info.silicon_id || ''
+        if (an && !savedAccName) { try { localStorage.setItem('siliconmate_account_name', an) } catch {} ; setAccountName(an) }
+        if (sid2 && !savedSiliconId) { try { localStorage.setItem('siliconmate_silicon_id', sid2) } catch {} ; setMySiliconId(sid2) }
+        // v4.4.3: 服务端下发最新隧道配置 → 刷新PAC文件 + 确保隧道就绪(start_tunnel幂等)
+        if (info.tunnel_config) {
+          try { invoke('start_tunnel', { config: info.tunnel_config }) } catch (te) {
+            console.warn('[硅侣] 冷启动隧道刷新失败:', te)
+          }
+        }
       }).catch((e: any) => console.warn('[硅侣] 冷启动拉取账号信息失败:', e))
     }
     smcpInit(savedSid).then(smcpOk => {

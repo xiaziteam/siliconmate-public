@@ -33,6 +33,9 @@ pub struct AccountInfo {
     pub account_name: Option<String>,
     #[serde(default)]
     pub silicon_id: Option<String>,
+    /// v4.4.3: 服务端随 account/info 下发的最新隧道配置(冷启动刷新PAC用)
+    #[serde(default)]
+    pub tunnel_config: Option<TunnelConfig>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]

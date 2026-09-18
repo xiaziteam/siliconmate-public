@@ -21,10 +21,12 @@ jobs:
           java-version: 17
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
+        with:
+          packages: 'platform-tools'
 
-      - name: Install NDK
-        run: sdkmanager --install "ndk;27.0.12077973"
+      - name: Install SDK components + NDK
+        run: yes | sdkmanager --licenses > /dev/null || true; sdkmanager --install "platforms;android-34" "build-tools;34.0.0" "ndk;27.0.12077973"
 
       - name: Install frontend deps
         working-directory: client

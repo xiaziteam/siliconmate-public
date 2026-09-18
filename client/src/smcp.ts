@@ -115,17 +115,15 @@ export async function getFriends(): Promise<SmcpFriend[]> {
   }
 }
 
-/** v4.4.0: 设置好友备注(微信式, 空串=清除) — 直连account-service公网端点 */
+/** v4.4.0: 设置好友备注(微信式, 空串=清除) — v4.4.1 改走Rust invoke(webview直连fetch被CORS拦截, Android可用但Mac/Linux拦截) */
 export async function setFriendAlias(friendUserId: string, alias: string): Promise<boolean> {
+  const inv = invoke()
+  if (!inv) return false
   try {
-    const resp = await fetch('https://locatenotify.online/v1/smcp/friend/setAlias', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'X-Account-Id': _userId },
-      body: JSON.stringify({ user_id: friendUserId, alias }),
-    })
-    const j = await resp.json()
-    if (!j.ok) {
-      console.warn('[SMCP] 设置备注失败:', j.message || j.error)
+    const result = await inv('smcp_friend_set_alias', { friendUserId, alias })
+    const ok = result?.ok ?? result?.data?.ok
+    if (!ok) {
+      console.warn('[SMCP] 设置备注失败:', result)
       return false
     }
     return true

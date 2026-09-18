@@ -300,6 +300,22 @@ pub async fn smcp_friend_set_permissions(
     smcp_post(&state, "/friend/setPermissions", uid, body).await
 }
 
+/// v4.4.1: 设置好友备注(微信式, 空串=清除) — 改走Rust通道, webview直连fetch被CORS拦截
+#[tauri::command]
+pub async fn smcp_friend_set_alias(
+    state: State<'_, SmcpState>,
+    friend_user_id: String,
+    alias: String,
+) -> Result<Value, String> {
+    let cfg = state.config.read().await;
+    let uid = cfg.as_ref().map(|c| c.user_id.as_str()).unwrap_or("");
+    let body = serde_json::json!({
+        "user_id": friend_user_id,
+        "alias": alias,
+    });
+    smcp_post(&state, "/friend/setAlias", uid, body).await
+}
+
 #[tauri::command]
 pub async fn smcp_friend_remove(
     state: State<'_, SmcpState>,

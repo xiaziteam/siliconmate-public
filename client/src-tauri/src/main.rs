@@ -158,6 +158,7 @@ fn main() {
             smcp::smcp_friend_reject,
             smcp::smcp_friend_list,
             smcp::smcp_friend_set_permissions,
+            smcp::smcp_friend_set_alias,
             smcp::smcp_friend_remove,
             smcp::smcp_friend_requests,
             smcp::smcp_ping,

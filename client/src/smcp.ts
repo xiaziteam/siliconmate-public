@@ -57,6 +57,8 @@ let _registered: boolean = false
 let _pollTimer: ReturnType<typeof setInterval> | null = null
 let _onMessage: ((msg: SmcpMessage) => void) | null = null
 let _lastPollTs: number = 0
+// v4.4.2: 断网自愈 — 记住初始化参数, 注册失败后由轮询tick自动补注册
+let _initArgs: { userId: string, role: string, device: string } | null = null
 
 const invoke = () => (window as any).__TAURI__?.core?.invoke
 
@@ -67,6 +69,7 @@ export async function smcpInit(userId: string, role: string = 'siliconmate', dev
 
   _userId = userId
   _myAgentId = `A-${userId.slice(0, 8)}-${role.slice(0, 8)}`
+  _initArgs = { userId, role, device }
 
   try {
     const result = await inv('smcp_register', {
@@ -85,8 +88,29 @@ export async function smcpInit(userId: string, role: string = 'siliconmate', dev
     }
     return true
   } catch (e) {
-    console.warn('[SMCP] 注册失败:', e)
+    console.warn('[SMCP] 注册失败(将由轮询自愈重试):', e)
     return false
+  }
+}
+
+/** v4.4.2: 断网自愈 — 网络恢复后自动补注册(由轮询tick驱动) */
+async function selfHealRegister(): Promise<void> {
+  if (_registered || !_initArgs) return
+  const inv = invoke()
+  if (!inv) return
+  try {
+    const result = await inv('smcp_register', {
+      userId: _initArgs.userId,
+      agentId: _myAgentId,
+      role: _initArgs.role,
+      device: _initArgs.device,
+    })
+    if (result?.ok || result) {
+      _registered = true
+      console.log('[SMCP] 自愈注册成功:', _myAgentId)
+    }
+  } catch {
+    // 仍断网, 下一tick再试
   }
 }
 
@@ -322,7 +346,11 @@ export function startPolling(
   }
   console.log('[SMCP] startPolling: _registered=' + _registered)
   _pollTimer = setInterval(async () => {
-    if (!_registered) return
+    if (!_registered) {
+      // v4.4.2: 断网自愈 — 注册失败(如登录瞬间断网)后网络恢复时自动补注册
+      await selfHealRegister()
+      if (!_registered) return
+    }
     try {
       const newMsgs = await pollMessages()
       for (const msg of newMsgs) {

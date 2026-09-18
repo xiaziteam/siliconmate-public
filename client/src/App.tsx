@@ -296,8 +296,8 @@ export const App: React.FC = () => {
       }).catch((e: any) => console.warn('[硅侣] 冷启动拉取账号信息失败:', e))
     }
     smcpInit(savedSid).then(smcpOk => {
-      if (!smcpOk) return
-      setSmcpReady(true)
+      if (smcpOk) setSmcpReady(true)
+      // v4.4.2: 注册失败(登录瞬间断网)也启动轮询/Kotlin服务 — 内部自愈补注册
       // T023: Android Kotlin权威轮询(activated由useState从localStorage恢复)
       const NB = (window as any).NativeBridge
       if (NB?.smcpStart && getMyAgentId()) {
@@ -529,16 +529,16 @@ export const App: React.FC = () => {
 
     // SMCP: 注册Agent + 启动消息轮询(异步，不阻塞)
     smcpInit(sid).then(smcpOk => {
-      if (smcpOk) {
-        setSmcpReady(true)
-        // T023: Android 上启动 Kotlin 权威轮询服务(仅已激活 — 遵守 US1 门禁)
-        const NB = (window as any).NativeBridge
-        if (NB?.smcpStart && serverActivated && getMyAgentId()) {
-          try { NB.smcpStart(sid, getMyAgentId()) } catch (e) { console.warn('[硅侣] smcpStart failed:', e) }
-        }
-        startPolling((msg: SmcpMessage) => {
-          handleSmcpIncomingMessage(msg)
-        })
+      if (smcpOk) setSmcpReady(true)
+      // v4.4.2: 注册失败(登录瞬间断网)也启动轮询/Kotlin服务 — 内部自愈补注册
+      // T023: Android 上启动 Kotlin 权威轮询服务(仅已激活 — 遵守 US1 门禁)
+      const NB = (window as any).NativeBridge
+      if (NB?.smcpStart && serverActivated && getMyAgentId()) {
+        try { NB.smcpStart(sid, getMyAgentId()) } catch (e) { console.warn('[硅侣] smcpStart failed:', e) }
+      }
+      startPolling((msg: SmcpMessage) => {
+        handleSmcpIncomingMessage(msg)
+      })
         // 启动远程task超时检查（每5分钟检查一次）
         if (invoke) {
           const timeoutInterval = setInterval(async () => {
@@ -554,7 +554,6 @@ export const App: React.FC = () => {
           // Store for cleanup (note: in production, would need proper cleanup)
           ;(window as any).__taskTimeoutChecker = timeoutInterval
         }
-      }
     }).catch(e => {
       console.warn('[硅侣] SMCP初始化失败:', e)
     })

@@ -273,6 +273,8 @@ class SmcpAgentService : Service() {
     // T024: 好友申请轮询节流计数(前台每5tick=15s / 后台每20tick=60s)
     private var tickCount = 0L
     private var lastFriendCount = -1
+    // v4.4.2: 断网自愈 — 注册成功标志, 失败后由轮询tick自动补注册
+    @Volatile private var registered = false
 
     override fun onBind(intent: Intent?): IBinder? = null
 
@@ -366,6 +368,7 @@ class SmcpAgentService : Service() {
                     .build()
                 val resp = httpClient.newCall(req).execute()
                 if (resp.isSuccessful) {
+                    registered = true
                     Log.i(TAG, "Agent registered: $agentId")
                 } else {
                     Log.w(TAG, "Agent register failed: ${resp.code}")
@@ -388,6 +391,8 @@ class SmcpAgentService : Service() {
             tickCount++
             val friendEvery = if (MainActivity.isInForeground()) 5L else 20L
             if (tickCount % friendEvery == 0L) pollFriendRequests()
+            // v4.4.2: 断网自愈 — 注册失败(启动瞬间断网)后每6tick(~18s)自动补注册
+            if (!registered && tickCount % 6L == 0L) registerAgent()
             try {
                 // Poll direct messages
                 val json = JSONObject().apply {

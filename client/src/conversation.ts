@@ -181,8 +181,16 @@ export function getConversationDisplay(
 
   // SMCP单聊
   if (conv.smcpTarget) {
-    const friend = friends?.find((f: any) => f.friend_user_id === conv.smcpTarget!.userId)
-    const friendName = friend?.account_name || friend?.alias || conv.smcpTarget.role || '好友'
+    let friend = friends?.find((f: any) => f.friend_user_id === conv.smcpTarget!.userId)
+    // v4.4.0: 老会话(userId为空, 仅有agentId)按 agentId 格式 A-{userId8}-siliconm 兜底匹配
+    if (!friend && conv.smcpTarget.agentId && conv.smcpTarget.agentId.startsWith('A-')) {
+      friend = friends?.find((f: any) => `A-${String(f.friend_user_id).slice(0, 8)}-siliconm` === conv.smcpTarget!.agentId)
+    }
+    // v4.4.0: 主显对方自设用户名, 备注作微信式后缀
+    const primary = friend?.account_name || friend?.alias || conv.smcpTarget.role || '好友'
+    const friendName = (friend?.account_name && friend?.alias)
+      ? `${friend.account_name}（${friend.alias}）`
+      : primary
     const siliconId = friend?.silicon_id || ''
     const isOnline = friend?.agent_status === 'online'
     return {

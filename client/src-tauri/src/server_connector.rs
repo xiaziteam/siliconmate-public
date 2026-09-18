@@ -45,7 +45,7 @@ impl ServerConnector {
 }
 
 /// P1 FIX: 用reqwest直连替代SSH+curl探活
-/// 1. 先尝试HTTPS到locatenotify.online/v1/smcp/ping (外部可达)
+/// 1. 先尝试HTTPS到example.com/v1/smcp/ping (外部可达)
 /// 2. 再尝试HTTP直连VPS2:15731/health (局域网/同机可用)
 /// 3. 全部3秒超时，fail-open不阻塞UI
 #[tauri::command]
@@ -70,9 +70,9 @@ pub async fn connect_server(
         .build()
         .map_err(|e| format!("HTTP client创建失败: {}", e))?;
 
-    // Strategy 1: HTTPS via locatenotify.online (externally reachable)
-    debug_log("P1: trying HTTPS via locatenotify.online/v1/smcp/ping");
-    match client.get("https://locatenotify.online/v1/smcp/ping").send().await {
+    // Strategy 1: HTTPS via example.com (externally reachable)
+    debug_log("P1: trying HTTPS via example.com/v1/smcp/ping");
+    match client.get("https://example.com/v1/smcp/ping").send().await {
         Ok(resp) => {
             let status_code = resp.status();
             let body = resp.text().await.unwrap_or_else(|e| format!("<read body failed: {}>", e));

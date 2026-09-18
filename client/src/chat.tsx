@@ -75,6 +75,8 @@ interface ChatProps {
   isVoiceMode: boolean
   /** 如果是SMCP对话，传对方信息 */
   smcpTarget?: { userId: string; agentId: string; role: string } | null
+  /** v4.4.0: 好友列表 — 头部显示好友自设用户名+备注(微信式) */
+  smcpFriends?: any[] | null
   /** 如果是SMCP群聊，传群信息 */
   smcpGroupTarget?: { groupId: string; groupName: string; memberCount?: number; members?: { userId: string; role: string; accountName?: string; siliconId?: string }[] } | null
   /** 当前用户ID，用于判断群管理权限 */
@@ -106,11 +108,24 @@ export const Chat: React.FC<ChatProps> = ({
   messages,
   isVoiceMode,
   smcpTarget,
+  smcpFriends,
   smcpGroupTarget,
   myUserId,
   onRetryLast,
 }) => {
   const isSmcp = !!(smcpTarget || smcpGroupTarget)
+  // v4.4.0: SMCP单聊头部名 — 主显好友自设用户名, 备注后缀; 老会话按agentId兜底匹配
+  let smcpFriend: any = null
+  if (smcpTarget) {
+    smcpFriend = smcpFriends?.find((f: any) => f.friend_user_id === smcpTarget.userId) || null
+    if (!smcpFriend && smcpTarget.agentId && smcpTarget.agentId.startsWith('A-')) {
+      smcpFriend = smcpFriends?.find((f: any) => `A-${String(f.friend_user_id).slice(0, 8)}-siliconm` === smcpTarget.agentId) || null
+    }
+  }
+  const smcpHeaderBase = smcpFriend?.account_name || smcpFriend?.alias || smcpTarget?.role || '好友'
+  const smcpHeaderName = (smcpFriend?.account_name && smcpFriend?.alias)
+    ? `${smcpFriend.account_name}（${smcpFriend.alias}）`
+    : smcpHeaderBase
   const [input, setInput] = useState('')
   const [imageAttachments, setImageAttachments] = useState<ImageAttachment[]>([])
   const [isProcessingImage, setIsProcessingImage] = useState(false)
@@ -381,7 +396,7 @@ export const Chat: React.FC<ChatProps> = ({
         gap: '12px',
       }}>
         <h1 style={{ fontSize: '18px', fontWeight: 600, margin: 0 }}>
-          {smcpGroupTarget ? `👥 ${smcpGroupTarget.groupName}` : smcpTarget ? `🦐 ${smcpTarget.role}` : '硅侣'}
+          {smcpGroupTarget ? `👥 ${smcpGroupTarget.groupName}` : smcpTarget ? `🦐 ${smcpHeaderName}` : '硅侣'}
         </h1>
         <span style={{ fontSize: '12px', color: '#7a8aa0' }}>
           {smcpGroupTarget
@@ -1148,7 +1163,7 @@ export const Chat: React.FC<ChatProps> = ({
               handleSend()
             }
           }}
-          placeholder={smcpGroupTarget ? `给 ${smcpGroupTarget.groupName} 发消息…` : smcpTarget ? `给 ${smcpTarget.role} 发消息…` : '说点什么…'}
+          placeholder={smcpGroupTarget ? `给 ${smcpGroupTarget.groupName} 发消息…` : smcpTarget ? `给 ${smcpHeaderName} 发消息…` : '说点什么…'}
           autoFocus
           style={{
             flex: 1,

@@ -1,13 +1,13 @@
 import React, { useState, useEffect } from 'react'
 import { Conversation, getConversationDisplay } from './conversation'
 import {
-  getFriends,
   getPendingRequests,
   sendFriendRequest,
   acceptFriendRequest,
   rejectFriendRequest,
   removeFriend,
   lookupSiliconId,
+  setFriendAlias,
   SmcpFriend,
   SmcpPendingRequest,
   ping as smcpPing,
@@ -55,6 +55,10 @@ interface SidebarProps {
   onPendingFriendCountChange?: (n: number) => void
   /** T024/T025: 好友申请通知点击信号(递增计数 → 打开好友面板) */
   openFriendsSignal?: number
+  /** v4.4.0: 好友列表(App级状态, 与Chat头部共享) */
+  smcpFriends?: SmcpFriend[]
+  /** v4.4.0: 刷新好友列表(备注修改后调用) */
+  refreshFriends?: () => void
 }
 
 export const Sidebar: React.FC<SidebarProps> = ({
@@ -77,6 +81,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
   pendingFriendCount = 0,
   onPendingFriendCountChange,
   openFriendsSignal = 0,
+  smcpFriends = [],
+  refreshFriends,
 }) => {
   const [deleteConfirmId, setDeleteConfirmId] = useState<string | null>(null)
   const [showActivateModal, setShowActivateModal] = useState(false)
@@ -100,7 +106,9 @@ export const Sidebar: React.FC<SidebarProps> = ({
 
   // SMCP state
   const [showSmcpPanel, setShowSmcpPanel] = useState(false)
-  const [smcpFriends, setSmcpFriends] = useState<SmcpFriend[]>([])
+  // v4.4.0: smcpFriends 改由 App 传入(props), 本地只留编辑态
+  const [aliasEditId, setAliasEditId] = useState<string | null>(null)
+  const [aliasDraft, setAliasDraft] = useState('')
   const [smcpRequests, setSmcpRequests] = useState<SmcpPendingRequest[]>([])
   const [smcpRelayOk, setSmcpRelayOk] = useState(false)
   const [unreadCount, setUnreadCount] = useState(0)
@@ -199,7 +207,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   useEffect(() => {
     if (showSmcpPanel && accountId) {
       smcpPing().then(setSmcpRelayOk)
-      getFriends().then(setSmcpFriends)
+      refreshFriends?.()
       getGroups().then(setSmcpGroups)
       getPendingRequests().then(list => {
         setSmcpRequests(list)
@@ -966,7 +974,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
                         const next = smcpRequests.filter(r => r.request_id !== req.request_id)
                         setSmcpRequests(next)
                         onPendingFriendCountChange?.(next.length)
-                        getFriends().then(setSmcpFriends)
+                        refreshFriends?.()
                       }}
                       style={{
                         background: '#2ecc71', color: '#fff', border: 'none',
@@ -1013,20 +1021,23 @@ export const Sidebar: React.FC<SidebarProps> = ({
               {smcpFriends.map(friend => {
                 // 从好友信息构造Agent ID (格式: A-{userId8}-{role8})
                 const friendAgentId = `A-${friend.friend_user_id.slice(0, 8)}-siliconm`
-                const friendDisplay = friend.silicon_id || friend.alias || friend.friend_user_id.slice(0, 8)
-                const friendName = friend.account_name || ''
+                // v4.4.0: 主显对方自设用户名, 备注作微信式后缀
+                const friendPrimary = friend.account_name || friend.silicon_id || friend.friend_user_id.slice(0, 8)
+                const friendRemark = friend.alias || ''
                 const hasComm = friend.granted_perms?.agent_comm || friend.received_perms?.agent_comm
                 const hasDelegate = friend.granted_perms?.agent_delegate || friend.received_perms?.agent_delegate
                 const isOnline = friend.agent_status === 'online'
                 const onlineDot = isOnline ? '🟢' : '⚫'
+                const isEditing = aliasEditId === friend.friend_id
                 return (
                   <div
                     key={friend.friend_id}
                     onClick={() => {
+                      if (isEditing) return
                       onOpenSmcpChat({
                         userId: friend.friend_user_id,
                         agentId: friendAgentId,
-                        role: friendDisplay,
+                        role: friendPrimary,
                         myAgentId: `A-${(accountId || '').slice(0, 8)}-siliconm`,
                       })
                       setShowSmcpPanel(false)
@@ -1041,26 +1052,77 @@ export const Sidebar: React.FC<SidebarProps> = ({
                     onMouseEnter={e => (e.currentTarget as HTMLDivElement).style.background = '#141820'}
                     onMouseLeave={e => (e.currentTarget as HTMLDivElement).style.background = 'transparent'}
                   >
+                    {isEditing ? (
+                      /* v4.4.0: 备注行内编辑 — Enter保存 / Esc取消 / 失焦保存 */
+                      <div onClick={e => e.stopPropagation()}>
+                        <input
+                          autoFocus
+                          value={aliasDraft}
+                          maxLength={30}
+                          placeholder="备注名(空=清除)"
+                          onChange={e => setAliasDraft(e.target.value)}
+                          onKeyDown={async (e) => {
+                            if (e.key === 'Enter') {
+                              const saved = await setFriendAlias(friend.friend_user_id, aliasDraft.trim())
+                              if (saved) { setAliasEditId(null); refreshFriends?.() }
+                            } else if (e.key === 'Escape') {
+                              setAliasEditId(null)
+                            }
+                          }}
+                          onBlur={async () => {
+                            const saved = await setFriendAlias(friend.friend_user_id, aliasDraft.trim())
+                            if (saved) { setAliasEditId(null); refreshFriends?.() }
+                          }}
+                          style={{
+                            width: '100%', boxSizing: 'border-box',
+                            background: '#141820', color: '#e6e6e6',
+                            border: '1px solid #2a5cff', borderRadius: '4px',
+                            fontSize: '12px', padding: '3px 6px', outline: 'none',
+                          }}
+                        />
+                      </div>
+                    ) : (
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-                      <span style={{ fontSize: '13px', color: '#e6e6e6' }}>{onlineDot} {friendDisplay}</span>
-                      <button
-                        onClick={async (e) => {
-                          e.stopPropagation()
-                          await removeFriend(friend.friend_user_id)
-                          getFriends().then(setSmcpFriends)
-                        }}
-                        style={{
-                          background: 'transparent', color: '#555', border: 'none',
-                          padding: '0 4px', cursor: 'pointer', fontSize: '12px',
-                        }}
-                      >
-                        ×
-                      </button>
+                      <span style={{ fontSize: '13px', color: '#e6e6e6', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', flex: 1 }}>
+                        {onlineDot} {friendPrimary}
+                        {friendRemark && <span style={{ color: '#7a8aa0' }}>（{friendRemark}）</span>}
+                      </span>
+                      <span style={{ display: 'flex', alignItems: 'center', flexShrink: 0 }}>
+                        <button
+                          title="设置备注"
+                          onClick={(e) => {
+                            e.stopPropagation()
+                            setAliasDraft(friendRemark)
+                            setAliasEditId(friend.friend_id)
+                          }}
+                          style={{
+                            background: 'transparent', color: '#555', border: 'none',
+                            padding: '0 4px', cursor: 'pointer', fontSize: '12px',
+                          }}
+                        >
+                          ✎
+                        </button>
+                        <button
+                          title="删除好友"
+                          onClick={async (e) => {
+                            e.stopPropagation()
+                            await removeFriend(friend.friend_user_id)
+                            refreshFriends?.()
+                          }}
+                          style={{
+                            background: 'transparent', color: '#555', border: 'none',
+                            padding: '0 4px', cursor: 'pointer', fontSize: '12px',
+                          }}
+                        >
+                          ×
+                        </button>
+                      </span>
                     </div>
+                    )}
                     <div style={{ fontSize: '10px', color: '#555', marginTop: '2px' }}>
                       {hasComm ? '💬' : '🚫'}沟通
                       {hasDelegate ? ' 🤝委派' : ''}
-                      {friendName && <span style={{ color: '#7a8aa0' }}> · {friendName}</span>}
+                      {friend.silicon_id && <span style={{ color: '#7a8aa0' }}> · {friend.silicon_id}</span>}
                     </div>
                   </div>
                 )

@@ -33,7 +33,8 @@ CREATE TABLE IF NOT EXISTS accounts (
   fail_count    INTEGER DEFAULT 0,
   locked_until  REAL DEFAULT 0,
   created_at    TEXT,
-  updated_at    TEXT
+  updated_at    TEXT,
+  silicon_id    TEXT UNIQUE
 );
 CREATE TABLE IF NOT EXISTS sessions (
   session_id     TEXT PRIMARY KEY,
@@ -67,6 +68,8 @@ CREATE TABLE IF NOT EXISTS activation_codes (
   used_at       TEXT,
   expires_at    TEXT,
   note          TEXT,
+  product       TEXT DEFAULT 'shell',
+  bound_account TEXT,
   created_at    TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_act_codes_hash ON activation_codes(code_hash);
@@ -82,7 +85,8 @@ CREATE TABLE IF NOT EXISTS tunnel_configs (
   short_id      TEXT NOT NULL,
   route_domains TEXT NOT NULL,
   note          TEXT,
-  updated_at    TEXT
+  updated_at    TEXT,
+  silicon_id    TEXT UNIQUE
 );
 CREATE TABLE IF NOT EXISTS tunnel_secrets (
   session_id  TEXT PRIMARY KEY,
@@ -133,6 +137,12 @@ def verify_password(pw_hash: str, pw: str) -> bool:
 def new_account_id() -> str:
     return "acc_" + secrets.token_hex(8)
 
+def new_silicon_id() -> str:
+    """生成硅侣号 SM-XXXX (4位大写字母+数字)"""
+    import string
+    chars = string.ascii_uppercase + string.digits
+    return "SM-" + "".join(secrets.choice(chars) for _ in range(4))
+
 
 def new_session_id() -> str:
     return "sess_" + secrets.token_hex(8)
@@ -152,3 +162,65 @@ def refresh_session_statuses(conn: sqlite3.Connection):
     conn.execute(
         "UPDATE sessions SET status='dead' WHERE status='stale' "
         "AND ?-last_heartbeat>?", (now, DEAD_AFTER_SEC))
+
+
+# ======================== SMCP 好友+消息 表 ========================
+
+SMCP_SCHEMA = """
+CREATE TABLE IF NOT EXISTS smcp_friends (
+  friend_id         TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL,
+  friend_user_id    TEXT NOT NULL,
+  status            TEXT DEFAULT 'pending',
+  granted_perms     TEXT DEFAULT '{}',
+  received_perms    TEXT DEFAULT '{}',
+  alias             TEXT,
+  created_at        TEXT,
+  updated_at        TEXT,
+  UNIQUE(user_id, friend_user_id)
+);
+CREATE INDEX IF NOT EXISTS idx_friends_user ON smcp_friends(user_id, status);
+CREATE INDEX IF NOT EXISTS idx_friends_both ON smcp_friends(user_id, friend_user_id);
+
+CREATE TABLE IF NOT EXISTS smcp_friend_requests (
+  request_id        TEXT PRIMARY KEY,
+  from_user_id      TEXT NOT NULL,
+  to_user_id        TEXT NOT NULL,
+  message           TEXT,
+  proposed_perms    TEXT DEFAULT '{}',
+  status            TEXT DEFAULT 'pending',
+  created_at        TEXT,
+  responded_at      TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_freq_to ON smcp_friend_requests(to_user_id, status);
+
+CREATE TABLE IF NOT EXISTS smcp_agents (
+  agent_id          TEXT PRIMARY KEY,
+  user_id           TEXT NOT NULL,
+  role              TEXT NOT NULL,
+  device            TEXT NOT NULL,
+  capabilities      TEXT DEFAULT '[]',
+  endpoint          TEXT,
+  status            TEXT DEFAULT 'online',
+  last_heartbeat    REAL DEFAULT 0,
+  registered_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_agents_user ON smcp_agents(user_id, status);
+
+CREATE TABLE IF NOT EXISTS smcp_messages (
+  msg_id            TEXT PRIMARY KEY,
+  from_agent        TEXT NOT NULL,
+  to_agent          TEXT,
+  to_user           TEXT,
+  msg_type          TEXT NOT NULL,
+  method            TEXT NOT NULL,
+  params            TEXT DEFAULT '{}',
+  timestamp         REAL NOT NULL,
+  hmac              TEXT,
+  delivered         INTEGER DEFAULT 0,
+  created_at        TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_msgs_to ON smcp_messages(to_agent, delivered);
+CREATE INDEX IF NOT EXISTS idx_msgs_from ON smcp_messages(from_agent, timestamp);
+CREATE INDEX IF NOT EXISTS idx_msgs_user ON smcp_messages(to_user, delivered);
+"""

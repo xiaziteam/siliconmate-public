@@ -1,7 +1,7 @@
 //! SMCP v0.1 客户端 — 硅侣通讯协议
 //!
 //! 电脑端SMCP节点: 注册/消息收发/好友管理/权限控制
-//! 中继服务器: https://locatenotify.online/v1/smcp
+//! 中继服务器: https://example.com/v1/smcp
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -9,7 +9,7 @@ use std::sync::Mutex;
 use tauri::{Emitter, State};
 use tokio::sync::RwLock;
 
-const RELAY_BASE: &str = "https://locatenotify.online/v1/smcp";
+const RELAY_BASE: &str = "https://example.com/v1/smcp";
 
 // --- 数据结构 ---
 

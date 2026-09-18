@@ -24,7 +24,7 @@ import {
   SmcpTarget,
   SmcpGroupTarget,
 } from './conversation'
-import { smcpInit, getMyAgentId, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet } from './smcp'
+import { smcpInit, getMyAgentId, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet, getFriends, SmcpFriend } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -251,6 +251,14 @@ export const App: React.FC = () => {
   const [friendReqCount, setFriendReqCount] = useState(0)
   // T024: 好友申请系统通知点击 → 拉起好友面板信号
   const [friendsOpenSignal, setFriendsOpenSignal] = useState(0)
+  // v4.4.0: 好友列表提升到App级(Sidebar/Chat共享, 聊天头部显示好友名)
+  const [smcpFriends, setSmcpFriends] = useState<SmcpFriend[]>([])
+  const refreshFriends = useCallback(() => {
+    getFriends().then(setSmcpFriends)
+  }, [])
+  useEffect(() => {
+    if (sessionId) refreshFriends()
+  }, [sessionId, refreshFriends])
   const invoke = (window as any).__TAURI__?.core?.invoke
   const listen = (window as any).__TAURI__?.event?.listen
 
@@ -361,7 +369,7 @@ export const App: React.FC = () => {
       setServerConnecting(true)
       try {
         const result: any = await invoke('connect_server')
-        // Android: {status:'connected'}; 桌面: 返回server_host字符串(如'locatenotify.online') — 非空即已连接
+        // Android: {status:'connected'}; 桌面: 返回server_host字符串(如'example.com') — 非空即已连接
         const connected = typeof result === 'object'
           ? result?.status === 'connected'
           : typeof result === 'string' && result.length > 0
@@ -847,7 +855,7 @@ export const App: React.FC = () => {
         } else {
           // 创建新对话放结果
           const smcpTarget: SmcpTarget = {
-            userId: '',
+            userId: msg.from_user || '',
             agentId: fromAgent,
             role: fromAgent,
             myAgentId: '',
@@ -869,7 +877,7 @@ export const App: React.FC = () => {
     // 构建显示内容
     let displayText = ''
     if (fileId) {
-      const fileUrl = `https://locatenotify.online/v1/smcp/file/download/${fileId}`
+      const fileUrl = `https://example.com/v1/smcp/file/download/${fileId}`
       displayText = groupId
         ? `👥 📎 [${fileName}](${fileUrl})` + (text ? `\n👥 ${text}` : '')
         : `🦐 📎 [${fileName}](${fileUrl})` + (text ? `\n🦐 ${text}` : '')
@@ -932,7 +940,7 @@ export const App: React.FC = () => {
         })
       } else {
         const smcpTarget: SmcpTarget = {
-          userId: '',
+          userId: msg.from_user || '',
           agentId: fromAgentId,
           role: fromAgentId,
           myAgentId: '',
@@ -1563,6 +1571,8 @@ export const App: React.FC = () => {
           pendingFriendCount={friendReqCount}
           onPendingFriendCountChange={setFriendReqCount}
           openFriendsSignal={friendsOpenSignal}
+          smcpFriends={smcpFriends}
+          refreshFriends={refreshFriends}
         />
       )}
       {/* 移动端：抽屉式侧栏（点遮罩/选中会话自动关闭） */}
@@ -1600,6 +1610,8 @@ export const App: React.FC = () => {
               pendingFriendCount={friendReqCount}
               onPendingFriendCountChange={setFriendReqCount}
               openFriendsSignal={friendsOpenSignal}
+              smcpFriends={smcpFriends}
+              refreshFriends={refreshFriends}
             />
           </div>
         </>
@@ -1653,6 +1665,7 @@ export const App: React.FC = () => {
           isVoiceMode={isVoiceMode}
           smcpTarget={activeConversation?.smcpTarget}
           smcpGroupTarget={activeConversation?.smcpGroupTarget}
+          smcpFriends={smcpFriends}
           myUserId={sessionId}
           onRetryLast={handleRetryLast}
         />

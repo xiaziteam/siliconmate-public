@@ -8,6 +8,8 @@ on:
 
 jobs:
   build-mac-intel:
+    # macos-13 (intel) runner 已退役 — 仅手动触发, push 不排队
+    if: github.event_name == 'workflow_dispatch'
     runs-on: macos-13
     steps:
       - uses: actions/checkout@v4

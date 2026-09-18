@@ -115,6 +115,26 @@ export async function getFriends(): Promise<SmcpFriend[]> {
   }
 }
 
+/** v4.4.0: 设置好友备注(微信式, 空串=清除) — 直连account-service公网端点 */
+export async function setFriendAlias(friendUserId: string, alias: string): Promise<boolean> {
+  try {
+    const resp = await fetch('https://example.com/v1/smcp/friend/setAlias', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Account-Id': _userId },
+      body: JSON.stringify({ user_id: friendUserId, alias }),
+    })
+    const j = await resp.json()
+    if (!j.ok) {
+      console.warn('[SMCP] 设置备注失败:', j.message || j.error)
+      return false
+    }
+    return true
+  } catch (e) {
+    console.warn('[SMCP] 设置备注失败:', e)
+    return false
+  }
+}
+
 /** 获取待处理好友请求 */
 export async function getPendingRequests(): Promise<SmcpPendingRequest[]> {
   const inv = invoke()
@@ -526,7 +546,7 @@ export async function uploadFile(
 
 /** 获取文件下载URL */
 export function getFileDownloadUrl(fileId: string): string {
-  return `https://locatenotify.online/v1/smcp/file/download/${fileId}`
+  return `https://example.com/v1/smcp/file/download/${fileId}`
 }
 
 // ===== OCR + 文件选择 =====

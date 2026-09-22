@@ -60,13 +60,27 @@ export const LocationShareMap: React.FC<LocationShareMapProps> = ({
       attributionControl: false,
     }).setView([23.1291, 113.2644], 11) // 默认广州
     // 高德免key瓦片(GCJ-02): 上报坐标同为GCJ-02, 直接叠加零偏移
-    L.tileLayer('https://webrd0{s}.is.autonavi.com/appmaptile?style=7&x={x}&y={y}&z={z}', {
-      subdomains: ['1', '2', '3', '4'],
-      maxZoom: 18,
-    }).addTo(map)
+    // 注意: webrd 主机只有 style=8; style=7 必须用 wprd 主机(曾用错导致整片404白图)
+    const layer = L.tileLayer(
+      'https://wprd0{s}.is.autonavi.com/appmaptile?x={x}&y={y}&z={z}&lang=zh_cn&size=1&scl=1&style=7',
+      { subdomains: ['1', '2', '3', '4'], maxZoom: 18 },
+    ).addTo(map)
+    // 瓦片连续失败自动切腾讯源兜底(同为GCJ-02)
+    let tileErrs = 0
+    layer.on('tileerror', () => {
+      tileErrs += 1
+      if (tileErrs === 3) {
+        L.tileLayer('https://rt{s}.map.gtimg.com/realtimerender?z={z}&x={x}&y={y}&type=vector&style=0', {
+          subdomains: ['0', '1', '2', '3'],
+          maxZoom: 18,
+        }).addTo(map)
+      }
+    })
     mapRef.current = map
-    // Leaflet在隐藏容器初始化后需要重算尺寸
+    // Leaflet在隐藏容器初始化后需要重算尺寸(多次重试防 Android 布局慢)
     setTimeout(() => map.invalidateSize(), 100)
+    setTimeout(() => map.invalidateSize(), 500)
+    setTimeout(() => map.invalidateSize(), 1500)
     return () => {
       map.remove()
       mapRef.current = null

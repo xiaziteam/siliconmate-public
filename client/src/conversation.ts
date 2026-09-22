@@ -6,6 +6,14 @@
  * - ConversationStore: 所有对话的CRUD + 持久化
  */
 
+/** v4.4.4: 位置消息数据(GCJ-02坐标) */
+export interface MessageLocation {
+  lat: number
+  lng: number
+  label?: string
+  accuracy?: number
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -20,6 +28,7 @@ export interface Message {
   duration_ms?: number
   error_message?: string
   steps?: MessageStep[]     // Multi-step execution (Computer Use)
+  location?: MessageLocation // v4.4.4: 位置消息
 }
 
 export interface MessageStep {

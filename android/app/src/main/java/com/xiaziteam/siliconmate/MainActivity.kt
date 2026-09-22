@@ -76,6 +76,7 @@ class MainActivity : AppCompatActivity() {
         private const val VPN_REQUEST_CODE = 1001
         private const val NOTIF_PERMISSION_CODE = 1002
         private const val AUDIO_PERMISSION_CODE = 1003
+        private const val LOCATION_PERMISSION_CODE = 1004
         private const val FILE_CHOOSER_REQUEST = 1004
         var instance: MainActivity? = null
             private set
@@ -330,6 +331,21 @@ class MainActivity : AppCompatActivity() {
                 AUDIO_PERMISSION_CODE
             )
         }
+        // Location permission (v4.4.4: 发送当前位置)
+        if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED &&
+            ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_COARSE_LOCATION)
+            != PackageManager.PERMISSION_GRANTED
+        ) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(
+                    Manifest.permission.ACCESS_FINE_LOCATION,
+                    Manifest.permission.ACCESS_COARSE_LOCATION
+                ),
+                LOCATION_PERMISSION_CODE
+            )
+        }
     }
 
     // --- JavaScript Bridge ---
@@ -347,6 +363,154 @@ class MainActivity : AppCompatActivity() {
                 Log.e(TAG, "openChatgpt failed: ${e.message}")
                 "error: ${e.message}"
             }
+        }
+
+        /** v4.4.4: 获取当前位置(微信式发送位置) — WGS-84→GCJ-02纠偏后返回
+         *  返回 {"ok":true,"lat","lng","accuracy","label"} 或 {"ok":false,"error"} */
+        @JavascriptInterface
+        fun getLocation(): String {
+            val hasFine = ContextCompat.checkSelfPermission(
+                this@MainActivity, Manifest.permission.ACCESS_FINE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasCoarse = ContextCompat.checkSelfPermission(
+                this@MainActivity, Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasFine && !hasCoarse) {
+                return """{"ok":false,"error":"permission"}"""
+            }
+            return try {
+                val lm = getSystemService(Context.LOCATION_SERVICE) as android.location.LocationManager
+                val location = getCurrentLocationBlocking(lm, hasFine)
+                    ?: return """{"ok":false,"error":"no_fix"}"""
+                // WGS-84 → GCJ-02(国内坐标系, 跳高德/腾讯地图不偏移)
+                val gcj = wgs84ToGcj02(location.latitude, location.longitude)
+                // 逆地理编码(无GMS设备可能失败, 失败降级空label)
+                val label = try {
+                    val geocoder = android.location.Geocoder(this@MainActivity, java.util.Locale.CHINA)
+                    val addrs: List<android.location.Address>? =
+                        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                            val latch = java.util.concurrent.CountDownLatch(1)
+                            val result = arrayOfNulls<List<android.location.Address>>(1)
+                            geocoder.getFromLocation(location.latitude, location.longitude, 1) { list ->
+                                result[0] = list
+                                latch.countDown()
+                            }
+                            latch.await(5, java.util.concurrent.TimeUnit.SECONDS)
+                            result[0]
+                        } else {
+                            @Suppress("DEPRECATION")
+                            geocoder.getFromLocation(location.latitude, location.longitude, 1)
+                        }
+                    val a = addrs?.firstOrNull()
+                    a?.getAddressLine(0)?.replace("中国", "")?.trim() ?: ""
+                } catch (e: Exception) {
+                    ""
+                }
+                val json = org.json.JSONObject()
+                json.put("ok", true)
+                json.put("lat", gcj.first)
+                json.put("lng", gcj.second)
+                json.put("accuracy", location.accuracy.toDouble())
+                json.put("label", label)
+                json.toString()
+            } catch (e: Exception) {
+                Log.e(TAG, "getLocation failed: ${e.message}")
+                """{"ok":false,"error":"${e.message?.replace("\"", "'")?.replace("\n", " ")}"}"""
+            }
+        }
+
+        /** 双provider并发取位置: 网络+GPS谁先回用谁, 10s总超时; API<30降级最近已知位置 */
+        private fun getCurrentLocationBlocking(
+            lm: android.location.LocationManager,
+            allowGps: Boolean
+        ): android.location.Location? {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+                val latch = java.util.concurrent.CountDownLatch(1)
+                val winner = arrayOfNulls<android.location.Location>(1)
+                val direct = java.util.concurrent.Executor { it.run() }
+                val providers = mutableListOf(android.location.LocationManager.NETWORK_PROVIDER)
+                if (allowGps) providers.add(android.location.LocationManager.GPS_PROVIDER)
+                for (p in providers) {
+                    try {
+                        lm.getCurrentLocation(p, null, direct) { loc ->
+                            if (loc != null && winner[0] == null) {
+                                winner[0] = loc
+                                latch.countDown()
+                            }
+                        }
+                    } catch (e: Exception) {
+                        // provider不可用跳过
+                    }
+                }
+                latch.await(10, java.util.concurrent.TimeUnit.SECONDS)
+                return winner[0]
+            }
+            var best: android.location.Location? = null
+            for (p in listOf(
+                android.location.LocationManager.GPS_PROVIDER,
+                android.location.LocationManager.NETWORK_PROVIDER,
+                android.location.LocationManager.PASSIVE_PROVIDER
+            )) {
+                try {
+                    @Suppress("DEPRECATION")
+                    val l = lm.getLastKnownLocation(p) ?: continue
+                    if (best == null || l.time > best!!.time) best = l
+                } catch (e: Exception) {
+                    // skip
+                }
+            }
+            return best
+        }
+
+        /** v4.4.4: 打开系统地图查看位置(geo: URI, 不依赖具体地图App) */
+        @JavascriptInterface
+        fun openMap(lat: String, lng: String, label: String): String {
+            return try {
+                val q = if (label.isNotEmpty()) "$lat,$lng($label)" else "$lat,$lng"
+                val intent = Intent(Intent.ACTION_VIEW, Uri.parse("geo:$lat,$lng?q=$q")).apply {
+                    addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+                }
+                startActivity(intent)
+                "ok"
+            } catch (e: Exception) {
+                runOnUiThread {
+                    Toast.makeText(this@MainActivity, "未找到地图应用", Toast.LENGTH_SHORT).show()
+                }
+                "error"
+            }
+        }
+
+        /** WGS-84→GCJ-02 坐标纠偏(公开算法; 中国境外坐标原样返回) */
+        private fun wgs84ToGcj02(wgsLat: Double, wgsLng: Double): Pair<Double, Double> {
+            // 中国境外不转换
+            if (wgsLng < 72.004 || wgsLng > 137.8347 || wgsLat < 0.8293 || wgsLat > 55.8271) {
+                return Pair(wgsLat, wgsLng)
+            }
+            val a = 6378245.0
+            val ee = 0.00669342162296594323
+            fun transformLat(x: Double, y: Double): Double {
+                var ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x))
+                ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0
+                ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0
+                ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320.0 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0
+                return ret
+            }
+            fun transformLng(x: Double, y: Double): Double {
+                var ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x))
+                ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0
+                ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0
+                ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0
+                return ret
+            }
+            var dLat = transformLat(wgsLng - 105.0, wgsLat - 35.0)
+            var dLng = transformLng(wgsLng - 105.0, wgsLat - 35.0)
+            val radLat = wgsLat / 180.0 * Math.PI
+            var magic = Math.sin(radLat)
+            magic = 1 - ee * magic * magic
+            val sqrtMagic = Math.sqrt(magic)
+            dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI)
+            dLng = (dLng * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI)
+            return Pair(wgsLat + dLat, wgsLng + dLng)
         }
 
         @JavascriptInterface

@@ -15,6 +15,7 @@ import { Sidebar } from './sidebar'
 import {
   Conversation,
   Message,
+  MessageLocation,
   loadConversations,
   saveConversations,
   createConversation,
@@ -879,6 +880,8 @@ export const App: React.FC = () => {
     const text = msg.params?.text || msg.params?.content || msg.params?.message || ''
     const fileId = msg.params?.file_id
     const fileName = msg.params?.filename || fileId
+    // v4.4.4: 位置消息(GCJ-02坐标)
+    const msgLocation: MessageLocation | undefined = msg.params?.location
 
     // 构建显示内容
     let displayText = ''
@@ -905,6 +908,7 @@ export const App: React.FC = () => {
       content: displayText,
       isStreaming: false,
       timestamp: Date.now(),
+      ...(msgLocation ? { location: msgLocation } : {}),
     }
 
     // 用函数式更新避免闭包过期 — 始终拿到最新conversations
@@ -1034,7 +1038,7 @@ export const App: React.FC = () => {
     }
   }, [activeConvId])
 
-  const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any) => {
+  const handleSendMessage = useCallback(async (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any, location?: MessageLocation) => {
     if (!text.trim() && (!attachments || attachments.length === 0)) return
 
     let convId = activeConvId
@@ -1066,6 +1070,7 @@ export const App: React.FC = () => {
       content: displayContent,
       isStreaming: false,
       timestamp: Date.now(),
+      ...(location ? { location } : {}),
     }
     updateConversation(convId, c => addMessage(c, userMsg))
 
@@ -1094,7 +1099,7 @@ export const App: React.FC = () => {
             }
           }
         }
-        const result = await sendGroupMessage(smcpGroupTarget.groupId, { content: text, ...fileParams, ...(mentions && mentions.length > 0 ? { mentions } : {}) })
+        const result = await sendGroupMessage(smcpGroupTarget.groupId, { content: text, ...fileParams, ...(mentions && mentions.length > 0 ? { mentions } : {}), ...(location ? { location } : {}) })
         if (result?.error) {
           const errMsg: Message = {
             id: `err_${Date.now()}`,
@@ -1142,7 +1147,7 @@ export const App: React.FC = () => {
           smcpTarget.agentId,
           smcpTarget.userId,
           text,
-          fileParams
+          { ...fileParams, ...(location ? { location } : {}) }
         )
         if (result?.error) {
           const errMsg: Message = {

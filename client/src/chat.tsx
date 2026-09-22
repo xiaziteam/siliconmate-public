@@ -24,6 +24,14 @@ interface ImageAttachment {
   type?: string // mime type for SMCP transfer
 }
 
+/** v4.4.4: 位置消息数据(GCJ-02坐标) */
+interface MessageLocation {
+  lat: number
+  lng: number
+  label?: string
+  accuracy?: number
+}
+
 interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -39,6 +47,8 @@ interface Message {
   is_task_result?: boolean
   // Multi-step execution (Computer Use)
   steps?: TaskStep[]
+  // v4.4.4: 位置消息
+  location?: MessageLocation
 }
 
 interface TaskStep {
@@ -63,7 +73,7 @@ function getTierStyle(tier: string) {
 }
 
 interface ChatProps {
-  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any) => void
+  onSendMessage: (text: string, attachments?: ImageAttachment[], deepThink?: boolean, feishuOutput?: boolean, mentions?: string[], taskCapability?: string, taskParams?: any, location?: MessageLocation) => void
   onVoiceChat: () => void
   status: 'idle' | 'thinking' | 'deep_thinking' | 'streaming' | 'error'
   deepThinkProgress?: string
@@ -131,6 +141,7 @@ export const Chat: React.FC<ChatProps> = ({
   const [isProcessingImage, setIsProcessingImage] = useState(false)
   const [deepThinkMode, setDeepThinkMode] = useState(false)
   const [feishuOutput, setFeishuOutput] = useState(false)
+  const [locating, setLocating] = useState(false)
   const [showGroupMembers, setShowGroupMembers] = useState(false)
   const [groupMembers, setGroupMembers] = useState<{ userId: string; role: string; accountName?: string; siliconId?: string }[]>([])
   const [showGroupManage, setShowGroupManage] = useState(false) // 群管理面板
@@ -282,6 +293,35 @@ export const Chat: React.FC<ChatProps> = ({
       e.preventDefault()
       handleSend()
     }
+  }
+
+  /** v4.4.4: 发送当前位置(微信式) — Android NativeBridge 同步阻塞最长~15s, setTimeout让loading态先渲染 */
+  const handleSendLocation = () => {
+    const NB = (window as any).NativeBridge
+    if (!NB?.getLocation || locating) return
+    setLocating(true)
+    setTimeout(() => {
+      try {
+        const result = JSON.parse(String(NB.getLocation()))
+        if (result.ok) {
+          const label = result.label || '我的位置'
+          onSendMessage(
+            `📍 ${label}`,
+            undefined, undefined, undefined, undefined, undefined, undefined,
+            { lat: Number(result.lat), lng: Number(result.lng), label, accuracy: Number(result.accuracy) || undefined }
+          )
+        } else if (result.error === 'permission') {
+          alert('请先授予定位权限：系统设置 → 应用 → 硅侣 → 权限 → 开启"位置信息"')
+        } else {
+          alert('定位失败，请到窗边或开阔处重试')
+        }
+      } catch (e) {
+        console.error('getLocation failed:', e)
+        alert('定位失败')
+      } finally {
+        setLocating(false)
+      }
+    }, 50)
   }
 
   const handleFileSelect = async () => {
@@ -672,6 +712,9 @@ export const Chat: React.FC<ChatProps> = ({
           const fileMatch = msg.content.match(/📎\s*\[([^\]]+)\]\(([^)]+)\)/)
           const isFileMsg = !!fileMatch
 
+          // v4.4.4: 位置消息
+          const isLocationMsg = !!msg.location
+
           // Detect group sender name (pattern: 👥 senderName: content or 🦐 prefix)
           const groupSenderMatch = isSmcp && !isUser && msg.content.match(/^(👥|🦐)\s*([^\s:：]+)[：:]\s*([\s\S]*)$/)
 
@@ -806,6 +849,44 @@ export const Chat: React.FC<ChatProps> = ({
                         {msg.content.match(/(\d+[BKMGT]B)/)?.[1] || '点击下载'}
                       </div>
                     </div>
+                  </div>
+                ) : isLocationMsg ? (
+                  /* v4.4.4: 位置卡片 — Android可点跳地图, 桌面只展示 */
+                  <div
+                    onClick={() => {
+                      const NB = (window as any).NativeBridge
+                      if (NB?.openMap && msg.location) {
+                        NB.openMap(String(msg.location.lat), String(msg.location.lng), msg.location.label || '')
+                      }
+                    }}
+                    style={{
+                      cursor: (window as any).NativeBridge?.openMap ? 'pointer' : 'default',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      minWidth: '200px',
+                    }}
+                  >
+                    <span style={{ fontSize: '24px' }}>📍</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: '14px',
+                        fontWeight: 600,
+                        color: '#fff',
+                        overflow: 'hidden',
+                        textOverflow: 'ellipsis',
+                        whiteSpace: 'nowrap',
+                      }}>
+                        {msg.location?.label || '我的位置'}
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.6)', marginTop: '2px' }}>
+                        {msg.location ? `${msg.location.lat.toFixed(5)}, ${msg.location.lng.toFixed(5)}` : ''}
+                        {msg.location?.accuracy ? ` · ±${Math.round(msg.location.accuracy)}m` : ''}
+                      </div>
+                    </div>
+                    {(window as any).NativeBridge?.openMap && (
+                      <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)', flexShrink: 0 }}>地图 ›</span>
+                    )}
                   </div>
                 ) : (
                   <>
@@ -1131,6 +1212,27 @@ export const Chat: React.FC<ChatProps> = ({
         )}
 
         {/* v4.1.1: 🎤语音输入按钮已移除 — 手机系统键盘自带语音输入, ChatGPT按钮替代 */}
+
+        {/* v4.4.4: 📍 发送位置 — 仅 Android(NativeBridge.getLocation) 且好友/群会话 */}
+        {isSmcp && !!(window as any).NativeBridge?.getLocation && (
+        <button
+          onClick={handleSendLocation}
+          disabled={locating}
+          title={locating ? '定位中…' : '发送位置'}
+          style={{
+            background: locating ? '#1a4a2a' : '#2a2a3a',
+            color: '#fff',
+            border: 'none',
+            borderRadius: '10px',
+            padding: '0 12px',
+            cursor: locating ? 'wait' : 'pointer',
+            fontSize: '16px',
+            flexShrink: 0,
+          }}
+        >
+          {locating ? '⏳' : '📍'}
+        </button>
+        )}
 
         {/* Text input */}
         <input

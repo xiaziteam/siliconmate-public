@@ -609,6 +609,11 @@ if (!(window as any).__TAURI__ && (window as any).NativeBridge) {
         window.dispatchEvent(new CustomEvent('smcp-task-request', { detail: { task: ev.task || null } }))
       } else if (ev?.type === 'friend_request') {
         window.dispatchEvent(new CustomEvent('smcp-friend-request', { detail: { count: ev.count || 0 } }))
+      } else if (ev?.type === 'location_share_self') {
+        // v4.4.5: 位置共享服务回推自己最新位置 → App刷新地图自己的标记
+        window.dispatchEvent(new CustomEvent('smcp-location-share-self', {
+          detail: { session_id: ev.session_id, lat: ev.lat, lng: ev.lng, accuracy: ev.accuracy },
+        }))
       }
     } catch (e) {
       console.warn('[NativeBridge] __onSmcpEvent parse error:', e)

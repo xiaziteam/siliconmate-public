@@ -1,6 +1,6 @@
 {
   "name": "siliconmate",
-  "version": "4.4.4",
+  "version": "4.4.5",
   "private": true,
   "type": "module",
   "scripts": {
@@ -13,6 +13,8 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/cli": "^2.11.4",
     "@tauri-apps/plugin-dialog": "^2.7.3",
+    "@types/leaflet": "^1.9.22",
+    "leaflet": "^1.9.4",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },

@@ -14,6 +14,33 @@ export interface MessageLocation {
   accuracy?: number
 }
 
+/** v4.4.5: 实时位置共享 — 上报目标 */
+export interface ShareTargetInfo {
+  mode: 'single' | 'group'
+  to_agent?: string
+  to_user?: string
+  group_id?: string
+}
+
+/** v4.4.5: 实时位置共享 — 参与者最新位置 */
+export interface ShareParticipant {
+  lat: number
+  lng: number
+  accuracy?: number
+  ts: number
+}
+
+/** v4.4.5: 实时位置共享会话 */
+export interface LocationShareSession {
+  sessionId: string
+  initiator: string
+  startedAt: number
+  ended?: boolean
+  convId?: string
+  target?: ShareTargetInfo
+  participants: Record<string, ShareParticipant>
+}
+
 export interface Message {
   id: string
   role: 'user' | 'assistant'
@@ -29,6 +56,8 @@ export interface Message {
   error_message?: string
   steps?: MessageStep[]     // Multi-step execution (Computer Use)
   location?: MessageLocation // v4.4.4: 位置消息
+  share_session_id?: string  // v4.4.5: 实时位置共享会话(卡片点击进入实时地图)
+  share_active?: boolean     // v4.4.5: 共享是否进行中(start=true, end后置false)
 }
 
 export interface MessageStep {

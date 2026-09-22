@@ -480,37 +480,61 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        /** WGS-84→GCJ-02 坐标纠偏(公开算法; 中国境外坐标原样返回) */
+        /** WGS-84→GCJ-02 坐标纠偏(v4.4.5 抽到 GeoUtils 供 LocationShareService 复用) */
         private fun wgs84ToGcj02(wgsLat: Double, wgsLng: Double): Pair<Double, Double> {
-            // 中国境外不转换
-            if (wgsLng < 72.004 || wgsLng > 137.8347 || wgsLat < 0.8293 || wgsLat > 55.8271) {
-                return Pair(wgsLat, wgsLng)
+            return GeoUtils.wgs84ToGcj02(wgsLat, wgsLng)
+        }
+
+        /** v4.4.5: 启动实时位置共享前台服务(30s间隔上报GCJ-02; 权限/登录校验在此) */
+        @JavascriptInterface
+        fun startLocationShare(configJson: String): String {
+            return try {
+                val cfg = org.json.JSONObject(configJson)
+                val sessionId = cfg.optString("session_id")
+                val target = cfg.optJSONObject("target")
+                if (sessionId.isEmpty() || target == null) {
+                    return """{"ok":false,"error":"bad_config"}"""
+                }
+                val mode = target.optString("mode")
+                if (mode != "single" && mode != "group") {
+                    return """{"ok":false,"error":"bad_mode"}"""
+                }
+                if (SmcpAgentService.userId.isEmpty() || SmcpAgentService.agentId.isEmpty()) {
+                    return """{"ok":false,"error":"not_logged_in"}"""
+                }
+                if (!hasLocationPermission()) {
+                    return """{"ok":false,"error":"permission"}"""
+                }
+                val intent = Intent(this@MainActivity, LocationShareService::class.java).apply {
+                    putExtra("session_id", sessionId)
+                    putExtra("target", target.toString())
+                }
+                ContextCompat.startForegroundService(this@MainActivity, intent)
+                """{"ok":true}"""
+            } catch (e: Exception) {
+                Log.e(TAG, "startLocationShare failed: ${e.message}")
+                """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
             }
-            val a = 6378245.0
-            val ee = 0.00669342162296594323
-            fun transformLat(x: Double, y: Double): Double {
-                var ret = -100.0 + 2.0 * x + 3.0 * y + 0.2 * y * y + 0.1 * x * y + 0.2 * Math.sqrt(Math.abs(x))
-                ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0
-                ret += (20.0 * Math.sin(y * Math.PI) + 40.0 * Math.sin(y / 3.0 * Math.PI)) * 2.0 / 3.0
-                ret += (160.0 * Math.sin(y / 12.0 * Math.PI) + 320.0 * Math.sin(y * Math.PI / 30.0)) * 2.0 / 3.0
-                return ret
+        }
+
+        /** v4.4.5: 停止实时位置共享服务(end消息由前端JS发送, 服务只负责停定位) */
+        @JavascriptInterface
+        fun stopLocationShare(): String {
+            return try {
+                stopService(Intent(this@MainActivity, LocationShareService::class.java))
+                """{"ok":true}"""
+            } catch (e: Exception) {
+                """{"ok":false,"error":"${e.message?.replace("\"", "'")}"}"""
             }
-            fun transformLng(x: Double, y: Double): Double {
-                var ret = 300.0 + x + 2.0 * y + 0.1 * x * x + 0.1 * x * y + 0.1 * Math.sqrt(Math.abs(x))
-                ret += (20.0 * Math.sin(6.0 * x * Math.PI) + 20.0 * Math.sin(2.0 * x * Math.PI)) * 2.0 / 3.0
-                ret += (20.0 * Math.sin(x * Math.PI) + 40.0 * Math.sin(x / 3.0 * Math.PI)) * 2.0 / 3.0
-                ret += (150.0 * Math.sin(x / 12.0 * Math.PI) + 300.0 * Math.sin(x / 30.0 * Math.PI)) * 2.0 / 3.0
-                return ret
-            }
-            var dLat = transformLat(wgsLng - 105.0, wgsLat - 35.0)
-            var dLng = transformLng(wgsLng - 105.0, wgsLat - 35.0)
-            val radLat = wgsLat / 180.0 * Math.PI
-            var magic = Math.sin(radLat)
-            magic = 1 - ee * magic * magic
-            val sqrtMagic = Math.sqrt(magic)
-            dLat = (dLat * 180.0) / ((a * (1 - ee)) / (magic * sqrtMagic) * Math.PI)
-            dLng = (dLng * 180.0) / (a / sqrtMagic * Math.cos(radLat) * Math.PI)
-            return Pair(wgsLat + dLat, wgsLng + dLng)
+        }
+
+        private fun hasLocationPermission(): Boolean {
+            return androidx.core.content.ContextCompat.checkSelfPermission(
+                this@MainActivity, android.Manifest.permission.ACCESS_FINE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED ||
+                androidx.core.content.ContextCompat.checkSelfPermission(
+                this@MainActivity, android.Manifest.permission.ACCESS_COARSE_LOCATION
+            ) == android.content.pm.PackageManager.PERMISSION_GRANTED
         }
 
         @JavascriptInterface

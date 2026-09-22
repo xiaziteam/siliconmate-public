@@ -307,6 +307,71 @@ export async function sendMessage(
   }
 }
 
+// ===== v4.4.5: 实时位置共享控制消息(start/end; update由安卓原生服务直发) =====
+
+export interface ShareLocationPayload {
+  lat: number
+  lng: number
+  accuracy?: number
+  label?: string
+}
+
+/** 单聊: 发送共享控制消息 — start用method=chat触发对方聊天通知, end静默(location.share) */
+export async function sendLocationShareSingle(
+  toAgent: string,
+  toUser: string,
+  action: 'start' | 'end',
+  sessionId: string,
+  location?: ShareLocationPayload
+): Promise<any> {
+  const inv = invoke()
+  if (!inv) return { error: 'Tauri not available' }
+  const params: any = {
+    text: action === 'start' ? '📍 开始实时位置共享' : '📍 实时位置共享已结束',
+    location_share: action,
+    session_id: sessionId,
+  }
+  if (location) {
+    params.lat = location.lat
+    params.lng = location.lng
+    params.accuracy = location.accuracy
+    params.label = location.label
+  }
+  try {
+    return await inv('smcp_message_send', {
+      fromAgent: _myAgentId,
+      toAgent,
+      toUser,
+      msgType: 'notify',
+      method: action === 'start' ? 'chat' : 'location.share',
+      params,
+    })
+  } catch (e) {
+    return { error: String(e) }
+  }
+}
+
+/** 群聊: 发送共享控制消息 — start用method=im.send触发通知, end静默 */
+export async function sendLocationShareGroup(
+  groupId: string,
+  action: 'start' | 'end',
+  sessionId: string,
+  location?: ShareLocationPayload
+): Promise<{ ok: boolean; error?: string }> {
+  const params: any = {
+    text: action === 'start' ? '📍 开始实时位置共享' : '📍 实时位置共享已结束',
+    location_share: action,
+    session_id: sessionId,
+  }
+  if (location) {
+    params.lat = location.lat
+    params.lng = location.lng
+    params.accuracy = location.accuracy
+    params.label = location.label
+  }
+  return sendGroupMessage(groupId, params, 'notify', action === 'start' ? 'im.send' : 'location.share')
+}
+
 /** 轮询消息(手动触发) */
 export async function pollMessages(agentId?: string): Promise<SmcpMessage[]> {
   const inv = invoke()

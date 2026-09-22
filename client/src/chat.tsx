@@ -12,7 +12,9 @@
 
 import React, { useState, useRef, useEffect } from 'react'
 import { open } from '@tauri-apps/plugin-dialog'
-import { formatTime, formatFileSize, getGroupInfo, kickGroupMember, transferGroupOwner, setGroupMemberRole, updateGroup, taskExecute, TaskResult, listCapabilities, CapabilityInfo } from './smcp'
+import { formatTime, formatFileSize, getGroupInfo, kickGroupMember, transferGroupOwner, setGroupMemberRole, updateGroup, taskExecute, TaskResult, listCapabilities, CapabilityInfo, getMyAgentId } from './smcp'
+import { LocationShareMap } from './LocationShareMap'
+import { LocationShareSession } from './conversation'
 
 interface ImageAttachment {
   path: string
@@ -49,6 +51,9 @@ interface Message {
   steps?: TaskStep[]
   // v4.4.4: 位置消息
   location?: MessageLocation
+  // v4.4.5: 实时位置共享
+  share_session_id?: string
+  share_active?: boolean
 }
 
 interface TaskStep {
@@ -93,6 +98,14 @@ interface ChatProps {
   myUserId?: string
   /** T018: 发送失败后重试最后一条用户消息 */
   onRetryLast?: () => void
+  /** v4.4.5: 实时位置共享 */
+  locationShares?: Record<string, LocationShareSession> | null
+  activeShareView?: string | null
+  activeConvId?: string | null
+  onStartLocationShare?: (convId: string) => Promise<{ ok: boolean; sessionId?: string; error?: string }>
+  onJoinLocationShare?: (sessionId: string, convId: string) => Promise<{ ok: boolean; error?: string }>
+  onStopLocationShare?: (sessionId: string) => void
+  onOpenShareView?: (sessionId: string | null) => void
 }
 
 /** 高亮搜索关键词 */
@@ -122,6 +135,13 @@ export const Chat: React.FC<ChatProps> = ({
   smcpGroupTarget,
   myUserId,
   onRetryLast,
+  locationShares,
+  activeShareView,
+  activeConvId,
+  onStartLocationShare,
+  onJoinLocationShare,
+  onStopLocationShare,
+  onOpenShareView,
 }) => {
   const isSmcp = !!(smcpTarget || smcpGroupTarget)
   // v4.4.0: SMCP单聊头部名 — 主显好友自设用户名, 备注后缀; 老会话按agentId兜底匹配
@@ -142,6 +162,9 @@ export const Chat: React.FC<ChatProps> = ({
   const [deepThinkMode, setDeepThinkMode] = useState(false)
   const [feishuOutput, setFeishuOutput] = useState(false)
   const [locating, setLocating] = useState(false)
+  // v4.4.5: 📍 弹出菜单(发送位置/共享实时位置) + 共享启动中
+  const [showLocMenu, setShowLocMenu] = useState(false)
+  const [startingShare, setStartingShare] = useState(false)
   const [showGroupMembers, setShowGroupMembers] = useState(false)
   const [groupMembers, setGroupMembers] = useState<{ userId: string; role: string; accountName?: string; siliconId?: string }[]>([])
   const [showGroupManage, setShowGroupManage] = useState(false) // 群管理面板
@@ -322,6 +345,16 @@ export const Chat: React.FC<ChatProps> = ({
         setLocating(false)
       }
     }, 50)
+  }
+
+  /** v4.4.5: 发起实时位置共享 — 委托App(定位→发start→启原生服务→开地图) */
+  const handleStartShare = () => {
+    setShowLocMenu(false)
+    if (!onStartLocationShare || !activeConvId || startingShare) return
+    setStartingShare(true)
+    onStartLocationShare(activeConvId).then(r => {
+      if (!r.ok && r.error) alert(r.error)
+    }).finally(() => setStartingShare(false))
   }
 
   const handleFileSelect = async () => {
@@ -850,6 +883,39 @@ export const Chat: React.FC<ChatProps> = ({
                       </div>
                     </div>
                   </div>
+                ) : msg.share_session_id ? (
+                  /* v4.4.5: 实时位置共享卡片 — 点击进入实时地图(含历史会话, 已结束显示灰badge) */
+                  <div
+                    onClick={() => onOpenShareView?.(msg.share_session_id || null)}
+                    style={{
+                      cursor: 'pointer',
+                      display: 'flex',
+                      alignItems: 'center',
+                      gap: '10px',
+                      minWidth: '200px',
+                    }}
+                  >
+                    <span style={{ fontSize: '24px' }}>📍</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{
+                        fontSize: '14px', fontWeight: 600, color: '#fff',
+                        overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                        display: 'flex', alignItems: 'center', gap: '6px',
+                      }}>
+                        {msg.location?.label || '实时位置共享'}
+                        <span style={{
+                          fontSize: '10px', padding: '1px 7px', borderRadius: '8px', flexShrink: 0,
+                          background: msg.share_active === false ? '#444' : '#1b5e20',
+                          color: msg.share_active === false ? '#999' : '#a5d6a7',
+                        }}>{msg.share_active === false ? '已结束' : '共享中'}</span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: 'rgba(255,255,255,0.6)', marginTop: '2px' }}>
+                        {msg.location ? `${msg.location.lat.toFixed(5)}, ${msg.location.lng.toFixed(5)}` : '点击查看实时地图'}
+                        {msg.location?.accuracy ? ` · ±${Math.round(msg.location.accuracy)}m` : ''}
+                      </div>
+                    </div>
+                    <span style={{ fontSize: '12px', color: 'rgba(255,255,255,0.5)', flexShrink: 0 }}>地图 ›</span>
+                  </div>
                 ) : isLocationMsg ? (
                   /* v4.4.4: 位置卡片 — Android可点跳地图, 桌面只展示 */
                   <div
@@ -1213,25 +1279,57 @@ export const Chat: React.FC<ChatProps> = ({
 
         {/* v4.1.1: 🎤语音输入按钮已移除 — 手机系统键盘自带语音输入, ChatGPT按钮替代 */}
 
-        {/* v4.4.4: 📍 发送位置 — 仅 Android(NativeBridge.getLocation) 且好友/群会话 */}
+        {/* v4.4.5: 📍 位置菜单(发送位置/共享实时位置) — 仅 Android 且好友/群会话; 桌面只收不发 */}
         {isSmcp && !!(window as any).NativeBridge?.getLocation && (
-        <button
-          onClick={handleSendLocation}
-          disabled={locating}
-          title={locating ? '定位中…' : '发送位置'}
-          style={{
-            background: locating ? '#1a4a2a' : '#2a2a3a',
-            color: '#fff',
-            border: 'none',
-            borderRadius: '10px',
-            padding: '0 12px',
-            cursor: locating ? 'wait' : 'pointer',
-            fontSize: '16px',
-            flexShrink: 0,
-          }}
-        >
-          {locating ? '⏳' : '📍'}
-        </button>
+        <div style={{ position: 'relative', flexShrink: 0 }}>
+          <button
+            onClick={() => { setShowLocMenu(v => !v); setLocating(false) }}
+            disabled={locating || startingShare}
+            title={locating ? '定位中…' : '位置'}
+            style={{
+              background: (locating || startingShare) ? '#1a4a2a' : showLocMenu ? '#3a3a4a' : '#2a2a3a',
+              color: '#fff',
+              border: 'none',
+              borderRadius: '10px',
+              padding: '0 12px',
+              cursor: (locating || startingShare) ? 'wait' : 'pointer',
+              fontSize: '16px',
+            }}
+          >
+            {locating ? '⏳' : startingShare ? '⏳' : '📍'}
+          </button>
+          {showLocMenu && (
+            <>
+              <div onClick={() => setShowLocMenu(false)} style={{
+                position: 'fixed', top: 0, left: 0, right: 0, bottom: 0, zIndex: 9998,
+              }} />
+              <div style={{
+                position: 'absolute', bottom: '44px', left: '50%', transform: 'translateX(-80%)',
+                background: '#1e1e2e', border: '1px solid #3a3a4a', borderRadius: '10px',
+                boxShadow: '0 6px 24px rgba(0,0,0,0.5)', zIndex: 9999,
+                overflow: 'hidden', minWidth: '140px',
+              }}>
+                <button
+                  onClick={() => { setShowLocMenu(false); handleSendLocation() }}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    background: 'none', border: 'none', color: '#e6e6e6',
+                    padding: '10px 14px', fontSize: '14px', cursor: 'pointer',
+                    borderBottom: '1px solid #2a2d35',
+                  }}
+                >📍 发送位置</button>
+                <button
+                  onClick={handleStartShare}
+                  style={{
+                    display: 'block', width: '100%', textAlign: 'left',
+                    background: 'none', border: 'none', color: '#e6e6e6',
+                    padding: '10px 14px', fontSize: '14px', cursor: 'pointer',
+                  }}
+                >🛰️ 共享实时位置</button>
+              </div>
+            </>
+          )}
+        </div>
         )}
 
         {/* Text input */}
@@ -1311,7 +1409,20 @@ export const Chat: React.FC<ChatProps> = ({
           70% { box-shadow: 0 0 0 10px rgba(231, 76, 60, 0); }
           100% { box-shadow: 0 0 0 0 rgba(231, 76, 60, 0); }
         }
+        .sm-share-pin { background: none !important; border: none !important; }
       `}</style>
+
+      {/* v4.4.5: 实时位置共享地图(全屏overlay) */}
+      {activeShareView && locationShares?.[activeShareView] && (
+        <LocationShareMap
+          session={locationShares[activeShareView]}
+          myAgentId={getMyAgentId()}
+          isAndroid={!!(window as any).NativeBridge?.getLocation}
+          onJoin={async () => onJoinLocationShare?.(activeShareView, activeConvId || '') ?? { ok: false, error: '未接入' }}
+          onStop={() => onStopLocationShare?.(activeShareView)}
+          onClose={() => onOpenShareView?.(null)}
+        />
+      )}
     </div>
   )
 }

@@ -16,6 +16,9 @@ import {
   Conversation,
   Message,
   MessageLocation,
+  ShareTargetInfo,
+  ShareParticipant,
+  LocationShareSession,
   loadConversations,
   saveConversations,
   createConversation,
@@ -25,7 +28,7 @@ import {
   SmcpTarget,
   SmcpGroupTarget,
 } from './conversation'
-import { smcpInit, getMyAgentId, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet, getFriends, SmcpFriend } from './smcp'
+import { smcpInit, getMyAgentId, startPolling, stopPolling, sendMessage as smcpSendMessage, sendGroupMessage, uploadFile, SmcpMessage, taskExecute, TaskResult, listCapabilities, CapabilityInfo, taskCheckTimeouts, taskRemovePendingRemote, taskResultSend, permissionSet, getFriends, SmcpFriend, sendLocationShareSingle, sendLocationShareGroup, ShareLocationPayload } from './smcp'
 
 interface ImageAttachment {
   path: string
@@ -254,6 +257,11 @@ export const App: React.FC = () => {
   const [friendsOpenSignal, setFriendsOpenSignal] = useState(0)
   // v4.4.0: 好友列表提升到App级(Sidebar/Chat共享, 聊天头部显示好友名)
   const [smcpFriends, setSmcpFriends] = useState<SmcpFriend[]>([])
+  // v4.4.5: 实时位置共享会话(sessionId → session) + 当前打开的地图视图session
+  const [locationShares, setLocationShares] = useState<Record<string, LocationShareSession>>({})
+  const locationSharesRef = useRef<Record<string, LocationShareSession>>({})
+  useEffect(() => { locationSharesRef.current = locationShares }, [locationShares])
+  const [activeShareView, setActiveShareView] = useState<string | null>(null)
   const refreshFriends = useCallback(() => {
     getFriends().then(setSmcpFriends)
   }, [])
@@ -793,9 +801,183 @@ export const App: React.FC = () => {
     }
   }, [])
 
+  /** v4.4.5: 处理实时位置共享消息(update只刷共享state; start/end更新会话+聊天卡片) */
+  const handleLocationShareMessage = useCallback((msg: SmcpMessage) => {
+    const action = msg.params?.location_share as 'start' | 'update' | 'end'
+    const sessionId = msg.params?.session_id || ''
+    const fromAgent = msg.from_agent || ''
+    if (!sessionId || !fromAgent) return
+    // 自己发的群回显: 自己侧由本地发起流程处理
+    if (fromAgent === getMyAgentId()) return
+
+    const groupId = msg.params?.group_id as string | undefined
+    const now = Date.now()
+
+    if (action === 'update') {
+      // 迟到者兼容: start已被旧客户端消费(如Mac升级前) → 收到update自动补建会话+插卡片
+      const existing = locationSharesRef.current[sessionId]
+      if (!existing && typeof msg.params?.lat === 'number' && typeof msg.params?.lng === 'number') {
+        const session: LocationShareSession = {
+          sessionId, initiator: fromAgent, startedAt: now,
+          participants: {
+            [fromAgent]: {
+              lat: msg.params.lat, lng: msg.params.lng,
+              accuracy: msg.params?.accuracy, ts: now,
+            },
+          },
+        }
+        setLocationShares(prev => ({ ...prev, [sessionId]: session }))
+        const cardMsg: Message = {
+          id: `smcp_${msg.msg_id}`,
+          role: 'assistant',
+          content: groupId ? '👥 📍 实时位置共享' : '🦐 📍 实时位置共享',
+          isStreaming: false,
+          timestamp: now,
+          location: { lat: msg.params.lat, lng: msg.params.lng, label: msg.params?.label, accuracy: msg.params?.accuracy },
+          share_session_id: sessionId,
+          share_active: true,
+        }
+        setConversations(prev => {
+          if (groupId) {
+            const groupConv = prev.find(c => c.smcpGroupTarget && c.smcpGroupTarget.groupId === groupId)
+            if (groupConv) return prev.map(c => c.id === groupConv.id ? addMessage(c, cardMsg) : c)
+            const groupTarget: SmcpGroupTarget = { groupId, groupName: groupId }
+            return [addMessage(createConversation(undefined, undefined, groupTarget), cardMsg), ...prev]
+          }
+          const targetConv = prev.find(c => c.smcpTarget && c.smcpTarget.agentId === fromAgent)
+          if (targetConv) return prev.map(c => c.id === targetConv.id ? addMessage(c, cardMsg) : c)
+          const smcpTarget: SmcpTarget = { userId: msg.from_user || '', agentId: fromAgent, role: fromAgent, myAgentId: '' }
+          return [addMessage(createConversation(undefined, smcpTarget), cardMsg), ...prev]
+        })
+        return
+      }
+      setLocationShares(prev => {
+        const cur = prev[sessionId]
+        if (!cur || cur.ended) return prev // 已结束 → 丢弃
+        const participants: Record<string, ShareParticipant> = { ...cur.participants }
+        participants[fromAgent] = {
+          lat: msg.params?.lat ?? 0,
+          lng: msg.params?.lng ?? 0,
+          accuracy: msg.params?.accuracy,
+          ts: now,
+        }
+        return { ...prev, [sessionId]: { ...cur, participants } }
+      })
+      return
+    }
+
+    if (action === 'start') {
+      setLocationShares(prev => {
+        if (prev[sessionId]) return prev // 重复投递幂等
+        const participants: Record<string, ShareParticipant> = {}
+        if (typeof msg.params?.lat === 'number' && typeof msg.params?.lng === 'number') {
+          participants[fromAgent] = {
+            lat: msg.params.lat, lng: msg.params.lng,
+            accuracy: msg.params?.accuracy, ts: now,
+          }
+        }
+        const session: LocationShareSession = {
+          sessionId, initiator: fromAgent, startedAt: now,
+          participants,
+        }
+        return { ...prev, [sessionId]: session }
+      })
+      // 插入共享卡片消息(带初始坐标, 点击进入实时地图)
+      const cardMsg: Message = {
+        id: `smcp_${msg.msg_id}`,
+        role: 'assistant',
+        content: groupId ? '👥 📍 实时位置共享' : '🦐 📍 实时位置共享',
+        isStreaming: false,
+        timestamp: now,
+        ...(typeof msg.params?.lat === 'number' && typeof msg.params?.lng === 'number' ? {
+          location: { lat: msg.params.lat, lng: msg.params.lng, label: msg.params?.label, accuracy: msg.params?.accuracy },
+        } : {}),
+        share_session_id: sessionId,
+        share_active: true,
+      }
+      setConversations(prev => {
+        if (groupId) {
+          const groupConv = prev.find(c => c.smcpGroupTarget && c.smcpGroupTarget.groupId === groupId)
+          if (groupConv) {
+            const isNotActive = groupConv.id !== activeConvId
+            return prev.map(c => {
+              if (c.id !== groupConv.id) return c
+              const updated = addMessage(c, cardMsg)
+              if (isNotActive) updated.unreadCount = (updated.unreadCount || 0) + 1
+              return updated
+            })
+          }
+          const groupTarget: SmcpGroupTarget = { groupId, groupName: groupId }
+          const conv = createConversation(undefined, undefined, groupTarget)
+          const updatedConv = addMessage(conv, cardMsg)
+          updatedConv.unreadCount = 1
+          return [updatedConv, ...prev]
+        }
+        const targetConv = prev.find(c => c.smcpTarget && c.smcpTarget.agentId === fromAgent)
+        if (targetConv) {
+          const isNotActive = targetConv.id !== activeConvId
+          return prev.map(c => {
+            if (c.id !== targetConv.id) return c
+            const updated = addMessage(c, cardMsg)
+            if (isNotActive) updated.unreadCount = (updated.unreadCount || 0) + 1
+            return updated
+          })
+        }
+        const smcpTarget: SmcpTarget = { userId: msg.from_user || '', agentId: fromAgent, role: fromAgent, myAgentId: '' }
+        const conv = createConversation(undefined, smcpTarget)
+        return [addMessage(conv, cardMsg), ...prev]
+      })
+      return
+    }
+
+    // end: 发起者结束 → 整会话结束; 参与者退出 → 仅移除该参与者
+    setLocationShares(prev => {
+      const cur = prev[sessionId]
+      if (!cur) return prev
+      if (cur.initiator === fromAgent) {
+        return { ...prev, [sessionId]: { ...cur, ended: true } }
+      }
+      const participants = { ...cur.participants }
+      delete participants[fromAgent]
+      return { ...prev, [sessionId]: { ...cur, participants } }
+    })
+    if (fromAgent === (locationSharesRef.current[sessionId]?.initiator)) {
+      // 发起者结束 → 卡片badge翻false + 插结束文本
+      setConversations(prev => prev.map(c => ({
+        ...c,
+        messages: c.messages.map(m => m.share_session_id === sessionId ? { ...m, share_active: false } : m),
+      })))
+      const endMsg: Message = {
+        id: `smcp_${msg.msg_id}`,
+        role: 'assistant',
+        content: groupId ? '👥 📍 实时位置共享已结束' : '🦐 📍 实时位置共享已结束',
+        isStreaming: false,
+        timestamp: now,
+        share_session_id: sessionId,
+        share_active: false,
+      }
+      setConversations(prev => {
+        if (groupId) {
+          const groupConv = prev.find(c => c.smcpGroupTarget && c.smcpGroupTarget.groupId === groupId)
+          if (groupConv) return prev.map(c => c.id === groupConv.id ? addMessage(c, endMsg) : c)
+          return prev
+        }
+        const targetConv = prev.find(c => c.smcpTarget && c.smcpTarget.agentId === fromAgent)
+        return targetConv ? prev.map(c => c.id === targetConv.id ? addMessage(c, endMsg) : c) : prev
+      })
+    }
+  }, [activeConvId])
+
   /** SMCP: 收到中继消息，放入对应对话 */
   const handleSmcpIncomingMessage = useCallback((msg: SmcpMessage) => {
     const msgType = msg.type || msg.msg_type || 'notify'
+
+    // v4.4.5: 实时位置共享消息 — 独立分支(update不刷聊天流/不触发通知)
+    const shareAction = msg.params?.location_share
+    if (shareAction === 'start' || shareAction === 'update' || shareAction === 'end') {
+      handleLocationShareMessage(msg)
+      return
+    }
 
     // Task/Result消息：特殊处理
     if (msgType === 'task') {
@@ -966,7 +1148,181 @@ export const App: React.FC = () => {
     if (!groupId && !fileId && text && msg.params?.agent_reply !== true) {
       consumeFriendMessage(msg, text, fromAgentId)
     }
-  }, [consumeFriendMessage])
+  }, [consumeFriendMessage, handleLocationShareMessage])
+
+  /** v4.4.5: 发起实时位置共享(仅安卓) — 定位→发start→启原生服务→本地会话+卡片→开地图 */
+  const handleStartLocationShare = useCallback(async (convId: string): Promise<{ ok: boolean; sessionId?: string; error?: string }> => {
+    const conv = conversations.find(c => c.id === convId)
+    if (!conv) return { ok: false, error: '会话不存在' }
+    const NB = (window as any).NativeBridge
+    if (!NB?.startLocationShare || !NB?.getLocation) {
+      return { ok: false, error: '当前设备不支持位置共享(仅安卓端)' }
+    }
+    // 1. 初始定位
+    let initial: ShareLocationPayload
+    try {
+      const r = JSON.parse(NB.getLocation())
+      if (r?.ok) {
+        initial = { lat: r.lat, lng: r.lng, accuracy: r.accuracy, label: r.label }
+      } else if (r?.error === 'permission') {
+        return { ok: false, error: '缺少定位权限, 请在系统设置中允许"位置信息"' }
+      } else {
+        return { ok: false, error: '定位失败, 请稍后重试' }
+      }
+    } catch (e) {
+      return { ok: false, error: '定位失败: ' + String(e) }
+    }
+    // 2. 目标(单聊/群聊)
+    let target: ShareTargetInfo
+    if (conv.smcpGroupTarget) {
+      target = { mode: 'group', group_id: conv.smcpGroupTarget.groupId }
+    } else if (conv.smcpTarget?.agentId) {
+      target = { mode: 'single', to_agent: conv.smcpTarget.agentId, to_user: conv.smcpTarget.userId }
+    } else {
+      return { ok: false, error: '当前会话不支持位置共享' }
+    }
+    const myAgent = getMyAgentId()
+    if (!myAgent) return { ok: false, error: 'SMCP未就绪' }
+    const sessionId = `share_${myAgent}_${Date.now()}`
+    // 3. 发start消息(带初始坐标; 群回显由from_agent==self过滤)
+    if (target.mode === 'group') {
+      await sendLocationShareGroup(target.group_id!, 'start', sessionId, initial)
+    } else {
+      await sendLocationShareSingle(target.to_agent!, target.to_user || '', 'start', sessionId, initial)
+    }
+    // 4. 启动原生服务(30s update上报)
+    try {
+      const r = JSON.parse(NB.startLocationShare(JSON.stringify({ session_id: sessionId, target })))
+      if (!r?.ok) {
+        return { ok: false, error: r?.error === 'permission' ? '缺少定位权限' : '共享服务启动失败' }
+      }
+    } catch (e) {
+      return { ok: false, error: '共享服务启动失败: ' + String(e) }
+    }
+    // 5. 本地会话state
+    setLocationShares(prev => ({
+      ...prev,
+      [sessionId]: {
+        sessionId, initiator: myAgent, startedAt: Date.now(),
+        convId, target,
+        participants: { [myAgent]: { lat: initial.lat, lng: initial.lng, accuracy: initial.accuracy, ts: Date.now() } },
+      },
+    }))
+    // 6. 本地插入共享卡片(user侧)
+    const cardMsg: Message = {
+      id: `share_start_${sessionId}`,
+      role: 'user',
+      content: '📍 实时位置共享',
+      isStreaming: false,
+      timestamp: Date.now(),
+      location: { lat: initial.lat, lng: initial.lng, label: initial.label, accuracy: initial.accuracy },
+      share_session_id: sessionId,
+      share_active: true,
+    }
+    updateConversation(convId, c => addMessage(c, cardMsg))
+    // 7. 打开实时地图
+    setActiveShareView(sessionId)
+    return { ok: true, sessionId }
+  }, [conversations, updateConversation])
+
+  /** v4.4.5: 加入对方的实时位置共享(安卓; 桌面只看) — 定位→启服务往同session发update */
+  const handleJoinLocationShare = useCallback(async (sessionId: string, convId: string): Promise<{ ok: boolean; error?: string }> => {
+    const conv = conversations.find(c => c.id === convId)
+    const session = locationSharesRef.current[sessionId]
+    if (!conv || !session) return { ok: false, error: '会话不存在' }
+    const NB = (window as any).NativeBridge
+    if (!NB?.startLocationShare || !NB?.getLocation) return { ok: true } // 桌面: 只读, 不算失败
+    const myAgent = getMyAgentId()
+    if (!myAgent) return { ok: false, error: 'SMCP未就绪' }
+    if (session.ended) return { ok: false, error: '共享已结束' }
+    if (session.participants[myAgent] && Object.keys(session.participants).includes(myAgent)) return { ok: true } // 已在共享中
+    let initial: ShareLocationPayload
+    try {
+      const r = JSON.parse(NB.getLocation())
+      if (r?.ok) {
+        initial = { lat: r.lat, lng: r.lng, accuracy: r.accuracy, label: r.label }
+      } else if (r?.error === 'permission') {
+        return { ok: false, error: '缺少定位权限, 请在系统设置中允许"位置信息"' }
+      } else {
+        return { ok: false, error: '定位失败, 无法加入' }
+      }
+    } catch (e) {
+      return { ok: false, error: '定位失败: ' + String(e) }
+    }
+    const target: ShareTargetInfo = conv.smcpGroupTarget
+      ? { mode: 'group', group_id: conv.smcpGroupTarget.groupId }
+      : { mode: 'single', to_agent: conv.smcpTarget?.agentId || '', to_user: conv.smcpTarget?.userId }
+    if (target.mode === 'single' && !target.to_agent) return { ok: false, error: '当前会话不支持' }
+    try {
+      const r = JSON.parse(NB.startLocationShare(JSON.stringify({ session_id: sessionId, target })))
+      if (!r?.ok) return { ok: false, error: r?.error === 'permission' ? '缺少定位权限' : '加入失败' }
+    } catch (e) {
+      return { ok: false, error: '加入失败: ' + String(e) }
+    }
+    // 本地state: 记录target/convId + 自己初始位置
+    setLocationShares(prev => {
+      const cur = prev[sessionId]
+      if (!cur) return prev
+      const participants = { ...cur.participants, [myAgent]: { lat: initial.lat, lng: initial.lng, accuracy: initial.accuracy, ts: Date.now() } }
+      return { ...prev, [sessionId]: { ...cur, participants, target, convId } }
+    })
+    return { ok: true }
+  }, [conversations])
+
+  /** v4.4.5: 结束/退出实时位置共享 — 发end→停原生服务→本地会话标记结束+badge翻false */
+  const handleStopLocationShare = useCallback(async (sessionId: string) => {
+    const session = locationSharesRef.current[sessionId]
+    const NB = (window as any).NativeBridge
+    // 1. 发end消息
+    if (session?.target) {
+      if (session.target.mode === 'group') {
+        await sendLocationShareGroup(session.target.group_id!, 'end', sessionId)
+      } else if (session.target.to_agent) {
+        await sendLocationShareSingle(session.target.to_agent, session.target.to_user || '', 'end', sessionId)
+      }
+    }
+    // 2. 停原生服务
+    try { NB?.stopLocationShare?.() } catch (e) { /* ignore */ }
+    // 3. 本地会话标记结束(发起者视角; 接收方由end消息驱动)
+    const myAgent = getMyAgentId()
+    const isInitiator = session?.initiator === myAgent
+    setLocationShares(prev => {
+      const cur = prev[sessionId]
+      if (!cur) return prev
+      if (cur.initiator !== myAgent) {
+        // 参与者退出: 移除自己, 会话本体继续
+        const participants = { ...cur.participants }
+        delete participants[myAgent]
+        return { ...prev, [sessionId]: { ...cur, participants } }
+      }
+      return { ...prev, [sessionId]: { ...cur, ended: true } }
+    })
+    if (isInitiator) {
+      // badge翻false
+      setConversations(prev => prev.map(c => ({
+        ...c,
+        messages: c.messages.map(m => m.share_session_id === sessionId ? { ...m, share_active: false } : m),
+      })))
+    }
+  }, [])
+
+  // v4.4.5: 安卓原生服务回推自己的最新位置 → 刷新地图自己的标记
+  useEffect(() => {
+    const onShareSelf = (e: Event) => {
+      const d = (e as CustomEvent).detail
+      if (!d?.session_id) return
+      const myAgent = getMyAgentId()
+      if (!myAgent) return
+      setLocationShares(prev => {
+        const cur = prev[d.session_id]
+        if (!cur) return prev
+        const participants = { ...cur.participants, [myAgent]: { lat: d.lat, lng: d.lng, accuracy: d.accuracy, ts: Date.now() } }
+        return { ...prev, [d.session_id]: { ...cur, participants } }
+      })
+    }
+    window.addEventListener('smcp-location-share-self', onShareSelf)
+    return () => window.removeEventListener('smcp-location-share-self', onShareSelf)
+  }, [])
 
   // T023: Android Kotlin 推送通道 — 消息与远程任务审批事件接线
   useEffect(() => {
@@ -1679,6 +2035,13 @@ export const App: React.FC = () => {
           smcpFriends={smcpFriends}
           myUserId={sessionId}
           onRetryLast={handleRetryLast}
+          locationShares={locationShares}
+          activeShareView={activeShareView}
+          activeConvId={activeConvId}
+          onStartLocationShare={handleStartLocationShare}
+          onJoinLocationShare={handleJoinLocationShare}
+          onStopLocationShare={handleStopLocationShare}
+          onOpenShareView={setActiveShareView}
         />
       </div>
       {/* 远程任务审批弹窗 */}

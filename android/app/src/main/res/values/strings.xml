@@ -1,0 +1,9 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">硅侣</string>
+    <string name="tunnel_channel_name">VPN隧道</string>
+    <string name="tunnel_channel_desc">VPN隧道运行通知</string>
+    <string name="agent_a11y_desc">硅侣Agent远程操控服务，允许电脑远程操控手机屏幕</string>
+    <string name="agent_channel_name">Agent服务</string>
+    <string name="agent_channel_desc">Agent远程操控服务运行通知</string>
+</resources>

@@ -1,0 +1,54 @@
+# Build artifacts
+target/
+dist/
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+*.so
+*.dylib
+
+# Binaries (too large for git)
+binaries/
+*.exe
+obscura-*
+
+# Generated
+gen/
+
+# Cargo.lock 必须提交：Rust二进制应用锁依赖保证CI可复现
+# （2026-09-17教训：无锁文件CI浮动解析，enigo/xcap新版要libxdo/libgbm，Linux链接突然挂）
+
+# Environment
+.env
+.env.local
+*.p12
+*.p7b
+*.cer
+*.csr
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# Logs
+*.log
+.loopx/
+.codex/
+*.apk
+android/.gradle/
+android/app/build/
+android/build/
+*.apk
+.loopx/
+.codex/
+local.properties
+
+# T031: 部署凭证不入仓
+scripts/.deploy.env

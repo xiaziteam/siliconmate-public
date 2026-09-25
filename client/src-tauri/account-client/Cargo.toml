@@ -1,0 +1,17 @@
+[package]
+name = "account-client"
+version = "0.1.0"
+edition = "2021"
+description = "账号服务2.0客户端(HMAC签名/login/fetch/heartbeat) — D3"
+license = "MIT"
+
+[dependencies]
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sha2 = "0.10"
+hmac = "0.12"
+thiserror = "1"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["full"] }

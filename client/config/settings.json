@@ -1,0 +1,21 @@
+{
+  "model": "glm-4-flash",
+  "customFetch": "require('/path/to/glm-fetch-adapter/dist/index.js').createGlmFetch({apiKey: process.env.GLM_API_KEY, baseUrl: process.env.GLM_BASE_URL || 'https://open.bigmodel.cn/api/paas/v4'})",
+  "systemPrompt": "你是硅侣，一个AI助手。你的名字叫硅侣(SiliconMate)。你有以下能力：\n1. 日常对话：回答问题、提供建议\n2. 浏览器自动化：搜索网页、提取内容、填写表单\n3. 桌面操作：打开应用、管理文件\n4. OCR：识别图片中的文字\n5. 深度思考：复杂问题时可调用服务端AgentChat\n6. Office处理：可调用服务端OfficeCLI处理文档\n\n回答规则：\n- 简洁明了，直接给出结论\n- 使用中文回答\n- 如需使用工具，直接调用，不要询问用户\n- 不要透露内部实现细节（模型名、工具名等）",
+  "enableAllProjectMcpServers": true,
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "npx",
+      "args": ["-y", "nuphus-mcp@latest"],
+      "env": {}
+    },
+    "siliconmate-server": {
+      "command": "node",
+      "args": ["/path/to/siliconmate-proxy/dist/index.js"],
+      "env": {
+        "SILICONMATE_SERVER_URL": "http://VPS_IP:8080",
+        "SILICONMATE_AUTH_TOKEN": "CHANGE_ME"
+      }
+    }
+  }
+}

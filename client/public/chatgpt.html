@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>硅侣 SiliconMate</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { background: #000; overflow: hidden; font-family: -apple-system, sans-serif; }
+#canvas { display: block; cursor: pointer; }
+#debug {
+    position: fixed; top: 5px; left: 5px;
+    background: rgba(0,0,0,0.85); color: #0f0;
+    padding: 4px 8px; border-radius: 4px;
+    font: 10px monospace; z-index: 200;
+    pointer-events: none; white-space: pre;
+}
+#debug.error { color: #f44; }
+</style>
+</head>
+<body>
+<div id="debug">CDP connecting...</div>
+<canvas id="canvas"></canvas>
+<script>
+const CDP_PORT = 9222;
+const USE_PROXY = true;
+const canvas = document.getElementById('canvas');
+const ctx = canvas.getContext('2d');
+const debug = document.getElementById('debug');
+let ws = null;
+let msgId = 1;
+let pageWidth = 1280;
+let pageHeight = 860;
+let cdpReady = false;
+let scrollY = 0;
+let devicePixelRatio = 1;
+
+function log(msg, isError) {
+    debug.textContent = msg;
+    debug.className = isError ? 'error' : '';
+}
+
+// ============ CDP Connection ============
+const REAL_UA = 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+async function connectCDP() {
+    try {
+        // 1. Find or create a page target (use proxy to avoid CORS)
+        const jsonUrl = USE_PROXY ? '/cdp/json' : `http://127.0.0.1:${CDP_PORT}/json`;
+        let resp = await fetch(jsonUrl);
+        let targets = await resp.json();
+        let page = targets.find(t => t.type === 'page');
+
+        if (!page) {
+            const newUrl = USE_PROXY ? '/cdp/json?new=about:blank' : `http://127.0.0.1:${CDP_PORT}/json/new?about:blank`;
+            resp = await fetch(newUrl);
+            page = await resp.json();
+        }
+
+        if (!page || !page.webSocketDebuggerUrl) throw new Error('No CDP target');
+
+        ws = new WebSocket(page.webSocketDebuggerUrl);
+        ws.onopen = async () => {
+            log('CDP connected, applying stealth...');
+
+            // 2. Override User-Agent FIRST (critical for Cloudflare)
+            await cdpSend('Emulation.setUserAgentOverride', {
+                userAgent: REAL_UA,
+                platform: 'MacIntel',
+                userAgentMetadata: {
+                    brands: [
+                        { brand: 'Google Chrome', version: '131' },
+                        { brand: 'Chromium', version: '131' },
+                        { brand: 'Not_A Brand', version: '24' }
+                    ],
+                    fullVersion: '131.0.0.0',
+                    platform: 'macOS',
+                    platformVersion: '10.15.7',
+                    architecture: 'x86',
+                    model: '',
+                    mobile: false
+                }
+            });
+
+            // 3. Inject stealth JS (anti-headless detection, critical for CF)
+            await cdpSend('Page.addScriptToEvaluateOnNewDocument', {
+                source: `
+                    Object.defineProperty(navigator, 'webdriver', {get: () => false});
+                    Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                    Object.defineProperty(navigator, 'languages', {get: () => ['zh-CN', 'zh', 'en']});
+                    window.chrome = {runtime: {}};
+                    const originalQuery = window.navigator.permissions.query;
+                    window.navigator.permissions.query = (parameters) => (
+                        parameters.name === 'notifications' ?
+                            Promise.resolve({ state: Notification.permission }) :
+                            originalQuery(parameters)
+                    );
+                `
+            });
+
+            // 4. Enable CDP domains
+            await cdpSend('Network.enable', {});
+            await cdpSend('Page.enable', {});
+            await cdpSend('DOM.enable', {});
+            await cdpSend('Runtime.enable', {});
+
+            // 4. Set viewport
+            await cdpSend('Emulation.setDeviceMetricsOverride', {
+                width: pageWidth, height: pageHeight,
+                deviceScaleFactor: 1, mobile: false
+            });
+
+            // 5. Wait for Tauri to inject cookies, then navigate
+            // (Tauri calls window.__navigateChatGPT after cookie injection)
+            log('CDP ready, waiting for cookie injection...');
+
+            // 6. Start screencast
+            await cdpSend('Page.startScreencast', {
+                format: 'jpeg', quality: 50,
+                maxWidth: pageWidth, maxHeight: pageHeight,
+                everyNthFrame: 1
+            });
+
+            cdpReady = true;
+            log(`Ready ${pageWidth}×${pageHeight}`);
+
+            // Debug: check page elements
+            setTimeout(debugPage, 2000);
+        };
+
+        ws.onmessage = (event) => handleCDPEvent(JSON.parse(event.data));
+        ws.onerror = () => { log('CDP Error', true); };
+        ws.onclose = () => {
+            cdpReady = false;
+            log('Disconnected, reconnecting...', true);
+            setTimeout(connectCDP, 2000);
+        };
+    } catch (e) {
+        log('Failed: ' + e.message, true);
+        setTimeout(connectCDP, 2000);
+    }
+}
+
+function cdpSend(method, params) {
+    return new Promise((resolve, reject) => {
+        if (!ws || ws.readyState !== WebSocket.OPEN) return reject('Not connected');
+        const id = msgId++;
+        const timeout = setTimeout(() => {
+            ws.removeEventListener('message', handler);
+            reject(`Timeout: ${method}`);
+        }, 5000);
+        const handler = (event) => {
+            const msg = JSON.parse(event.data);
+            if (msg.id === id) {
+                clearTimeout(timeout);
+                ws.removeEventListener('message', handler);
+                msg.error ? reject(msg.error.message) : resolve(msg.result);
+            }
+        };
+        ws.addEventListener('message', handler);
+        ws.send(JSON.stringify({ id, method, params }));
+    });
+}
+
+function handleCDPEvent(msg) {
+    if (msg.method === 'Page.screencastFrame') {
+        const { data, sessionId: sid } = msg.params;
+        renderFrame(data);
+        cdpSend('Page.screencastFrameAck', { sessionId: sid }).catch(() => {});
+    } else if (msg.method === 'Page.loadEventFired' || msg.method === 'Page.frameNavigated') {
+        setTimeout(debugPage, 1500);
+    }
+}
+
+function renderFrame(base64Data) {
+    const img = new Image();
+    img.onload = () => {
+        canvas.width = img.width;
+        canvas.height = img.height;
+        ctx.drawImage(img, 0, 0);
+    };
+    img.src = 'data:image/jpeg;base64,' + base64Data;
+}
+
+// ============ Debug: 检查页面状态 ============
+async function debugPage() {
+    if (!cdpReady) return;
+    try {
+        const info = await evalJS(`
+            JSON.stringify({
+                url: location.href,
+                title: document.title,
+                hasInput: !!document.querySelector('#prompt-textarea'),
+                hasSendBtn: !!document.querySelector('[data-testid="send-button"]') || !!document.querySelector('#composer-submit-button'),
+                hasVoiceBtn: !!document.querySelector('button[aria-label="Start dictation"]'),
+                bodyLen: document.body.innerHTML.length,
+                scrollY: window.scrollY,
+                scrollHeight: document.documentElement.scrollHeight,
+                clientHeight: document.documentElement.clientHeight
+            })
+        `);
+        const parsed = JSON.parse(info || '{}');
+        log(`Page: ${parsed.title || '?'} | input:${parsed.hasInput} send:${parsed.hasSendBtn} voice:${parsed.hasVoiceBtn} | body:${parsed.bodyLen} | scroll:${parsed.scrollY}/${parsed.scrollHeight}`);
+    } catch(e) {
+        log('debug error: ' + e, true);
+    }
+}
+
+// ============ Runtime.evaluate ============
+async function evalJS(expr) {
+    if (!cdpReady) return null;
+    try {
+        const r = await cdpSend('Runtime.evaluate', {
+            expression: expr,
+            returnByValue: true,
+            awaitPromise: true
+        });
+        return r?.result?.value;
+    } catch(e) { return null; }
+}
+
+// ============ Canvas坐标 → 页面坐标 ============
+function canvasToPage(e) {
+    const rect = canvas.getBoundingClientRect();
+    const canvasScaleX = canvas.width / rect.width;
+    const canvasScaleY = canvas.height / rect.height;
+    return {
+        x: (e.clientX - rect.left) * canvasScaleX,
+        y: (e.clientY - rect.top) * canvasScaleY
+    };
+}
+
+// ============ Canvas鼠标事件转发给Obscura ============
+canvas.addEventListener('mousedown', async (e) => {
+    e.preventDefault();
+    const { x, y } = canvasToPage(e);
+    cdpSend('Input.dispatchMouseEvent', {
+        type: 'mousePressed', x, y, button: 'left', clickCount: 1
+    }).catch(()=>{});
+});
+canvas.addEventListener('mouseup', async (e) => {
+    e.preventDefault();
+    const { x, y } = canvasToPage(e);
+    cdpSend('Input.dispatchMouseEvent', {
+        type: 'mouseReleased', x, y, button: 'left', clickCount: 1
+    }).catch(()=>{});
+});
+canvas.addEventListener('mousemove', (e) => {
+    const { x, y } = canvasToPage(e);
+    cdpSend('Input.dispatchMouseEvent', {
+        type: 'mouseMoved', x, y
+    }).catch(()=>{});
+});
+canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+
+// 滚轮
+canvas.addEventListener('wheel', (e) => {
+    e.preventDefault();
+    const { x, y } = canvasToPage(e);
+    cdpSend('Input.dispatchMouseEvent', {
+        type: 'mouseWheel', x, y, deltaX: e.deltaX, deltaY: e.deltaY
+    }).catch(()=>{});
+}, { passive: false });
+
+// ============ 键盘事件转发 ============
+// 当canvas有焦点时, 将键盘事件转发给Obscura
+document.addEventListener('keydown', async (e) => {
+    // 不拦截工具栏的输入 (如果有)
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    const keyMap = {
+        'Backspace': 'Backspace', 'Tab': 'Tab', 'Enter': 'Enter',
+        'Escape': 'Escape', 'Delete': 'Delete',
+        'ArrowLeft': 'ArrowLeft', 'ArrowRight': 'ArrowRight',
+        'ArrowUp': 'ArrowUp', 'ArrowDown': 'ArrowDown',
+        'Home': 'Home', 'End': 'End', 'PageUp': 'PageUp', 'PageDown': 'PageDown'
+    };
+
+    const params = {
+        type: e.type === 'keyup' ? 'keyUp' : 'keyDown',
+        key: e.key,
+        code: e.code,
+        windowsVirtualKeyCode: e.keyCode,
+        nativeVirtualKeyCode: e.keyCode,
+        text: e.key.length === 1 ? e.key : ''
+    };
+
+    cdpSend('Input.dispatchKeyEvent', params).catch(()=>{});
+});
+
+document.addEventListener('keyup', async (e) => {
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+    cdpSend('Input.dispatchKeyEvent', {
+        type: 'keyUp',
+        key: e.key,
+        code: e.code,
+        windowsVirtualKeyCode: e.keyCode,
+        nativeVirtualKeyCode: e.keyCode,
+        text: e.key.length === 1 ? e.key : ''
+    }).catch(()=>{});
+});
+
+// ============ Session Cookie注入 + Navigate（Tauri调用） ============
+window.__injectSession = async function(cookies) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('CDP not connected, cannot inject session');
+        return false;
+    }
+
+    for (const [name, value] of Object.entries(cookies)) {
+        try {
+            await cdpSend('Network.setCookie', {
+                name: name,
+                value: value,
+                domain: '.chatgpt.com',
+                path: '/',
+                secure: true,
+                sameSite: 'Lax'
+            });
+        } catch(e) {
+            console.error(`Cookie inject failed: ${name}`, e);
+        }
+    }
+    log('Session cookies injected');
+    return true;
+};
+
+window.__navigateChatGPT = async function() {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+        console.error('CDP not connected, cannot navigate');
+        return false;
+    }
+    try {
+        log('Navigating to chatgpt.com...');
+        await cdpSend('Page.navigate', { url: 'https://chatgpt.com/' });
+    } catch(e) {
+        log('Navigate failed: ' + e, true);
+        return false;
+    }
+    return true;
+};
+
+// ============ 启动 ============
+connectCDP();
+</script>
+</body>
+</html>

@@ -1,0 +1,23 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Capability for the main window",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "dialog:allow-open",
+    "dialog:allow-save",
+    "dialog:allow-ask",
+    "dialog:allow-confirm",
+    "dialog:allow-message",
+    "opener:default",
+    {
+      "identifier": "core:event:default",
+      "allow": [
+        { "event": "obscura-ready", "target": "main" },
+        { "event": "obscura-error", "target": "main" }
+      ]
+    }
+  ]
+}

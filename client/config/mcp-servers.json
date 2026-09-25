@@ -1,0 +1,19 @@
+{
+  "mcpServers": {
+    "nuphus-mcp": {
+      "command": "npx",
+      "args": ["-y", "nuphus-mcp@latest"],
+      "env": {},
+      "description": "nuphus-mcp 本地工具 — 38个浏览器+桌面自动化工具"
+    },
+    "siliconmate-server": {
+      "command": "node",
+      "args": ["/path/to/siliconmate-proxy/dist/index.js"],
+      "env": {
+        "SILICONMATE_SERVER_URL": "http://VPS_IP:8080",
+        "SILICONMATE_AUTH_TOKEN": "CHANGE_ME"
+      },
+      "description": "硅侣服务端代理 — AgentChat深度思考 + OfficeCLI文档处理"
+    }
+  }
+}
